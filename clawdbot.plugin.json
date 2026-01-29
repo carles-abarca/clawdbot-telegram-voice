@@ -1,0 +1,107 @@
+{
+  "$schema": "https://docs.clawd.bot/schemas/plugin.json",
+  "name": "telegram-voice",
+  "displayName": "Telegram Voice Calls",
+  "description": "Voice conversations with your Clawdbot assistant through Telegram - 100% local stack",
+  "version": "0.1.0",
+  "author": {
+    "name": "Carles Abarca",
+    "email": "carles@silverbacking.ai",
+    "url": "https://github.com/carlesabarca"
+  },
+  "repository": "https://github.com/carlesabarca/clawdbot-telegram-voice",
+  "license": "MIT",
+  "keywords": ["telegram", "voice", "calls", "whisper", "piper", "local"],
+  
+  "entry": "dist/index.js",
+  
+  "capabilities": {
+    "channel": true,
+    "tools": true,
+    "commands": true
+  },
+  
+  "config": {
+    "type": "object",
+    "properties": {
+      "telegram": {
+        "type": "object",
+        "properties": {
+          "apiId": { "type": "number", "description": "Telegram API ID from my.telegram.org" },
+          "apiHash": { "type": "string", "description": "Telegram API Hash" },
+          "phone": { "type": "string", "description": "Phone number with country code" }
+        },
+        "required": ["apiId", "apiHash", "phone"]
+      },
+      "stt": {
+        "type": "object",
+        "properties": {
+          "provider": { "type": "string", "enum": ["whisper-cpp", "whisper-api"], "default": "whisper-cpp" },
+          "whisperPath": { "type": "string", "description": "Path to whisper-cli binary" },
+          "modelPath": { "type": "string", "description": "Path to Whisper model (.bin)" },
+          "language": { "type": "string", "default": "auto" }
+        }
+      },
+      "tts": {
+        "type": "object",
+        "properties": {
+          "provider": { "type": "string", "enum": ["piper", "openai", "elevenlabs"], "default": "piper" },
+          "piperPath": { "type": "string", "description": "Path to piper binary" },
+          "voicePath": { "type": "string", "description": "Path to voice model (.onnx)" }
+        }
+      },
+      "allowedUsers": {
+        "type": "array",
+        "items": { "type": "number" },
+        "description": "Telegram user IDs allowed to call"
+      },
+      "autoAnswer": {
+        "type": "boolean",
+        "default": true,
+        "description": "Automatically answer incoming calls"
+      }
+    },
+    "required": ["telegram"]
+  },
+  
+  "tools": [
+    {
+      "name": "telegram_voice_call",
+      "description": "Initiate or manage Telegram voice calls",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["status", "end"],
+            "description": "Action to perform"
+          },
+          "userId": {
+            "type": "number",
+            "description": "Telegram user ID"
+          }
+        },
+        "required": ["action"]
+      }
+    }
+  ],
+  
+  "commands": [
+    {
+      "name": "telegram-voice",
+      "description": "Manage Telegram voice calls",
+      "subcommands": [
+        { "name": "auth", "description": "Authenticate with Telegram" },
+        { "name": "status", "description": "Show connection status" },
+        { "name": "test-tts", "description": "Test text-to-speech" },
+        { "name": "test-stt", "description": "Test speech-to-text" },
+        { "name": "logs", "description": "View plugin logs" }
+      ]
+    }
+  ],
+  
+  "dependencies": {
+    "system": ["python3", "ffmpeg"],
+    "python": ["pyrogram", "py-tgcalls", "tgcrypto"]
+  }
+}

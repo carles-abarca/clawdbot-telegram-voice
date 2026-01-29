@@ -1,0 +1,33 @@
+{
+  "name": "@carlesabarca/clawdbot-telegram-voice",
+  "version": "0.1.0",
+  "description": "Telegram voice calls plugin for Clawdbot - 100% local, free stack (Whisper + Piper + Claude)",
+  "author": "Carles Abarca <carles@silverbacking.ai>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/carlesabarca/clawdbot-telegram-voice"
+  },
+  "keywords": [
+    "clawdbot",
+    "telegram",
+    "voice",
+    "whisper",
+    "piper",
+    "ai",
+    "assistant"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "peerDependencies": {
+    "clawdbot": ">=2026.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "@types/node": "^20.0.0"
+  }
+}
