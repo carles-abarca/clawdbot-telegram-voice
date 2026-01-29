@@ -1,4 +1,4 @@
-# @carlesabarca/clawdbot-telegram-voice
+# @carles-abarca/clawdbot-telegram-voice
 
 🎙️ **Telegram Voice Calls Plugin for Clawdbot**
 
@@ -27,7 +27,7 @@ Have real voice conversations with your Clawdbot assistant through Telegram - 10
 ### 1. Install the plugin
 
 ```bash
-clawdbot plugins install @carlesabarca/clawdbot-telegram-voice
+clawdbot plugins install @carles-abarca/clawdbot-telegram-voice
 ```
 
 ### 2. Configure
