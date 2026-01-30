@@ -320,8 +320,9 @@ class TelegramVoiceBridge:
             # Start stdin reader as a task
             reader_task = asyncio.create_task(self.stdin_reader())
             
-            # Wait for shutdown signal
-            await self._shutdown_event.wait()
+            # Main loop - yield to event loop regularly to process Pyrogram updates
+            while self.running and not self._shutdown_event.is_set():
+                await asyncio.sleep(0.1)  # Yield to event loop
             
             # Cancel stdin reader
             reader_task.cancel()
