@@ -298,7 +298,8 @@ class TelegramVoiceBridge:
         signal.signal(signal.SIGTERM, signal_handler)
         
         try:
-            # app.run() already started the client, so we can use it directly
+            # Start the client (app.run() doesn't auto-start in pyrofork)
+            await self.app.start()
             me = await self.app.get_me()
             self.emit_event("pyrogram.ready", {
                 "user_id": me.id,
@@ -338,7 +339,10 @@ class TelegramVoiceBridge:
             except:
                 pass
             
-            # Note: app.run() handles app.stop() automatically
+            try:
+                await self.app.stop()
+            except:
+                pass
             self.emit_event("shutdown", {"status": "complete"})
 
 
