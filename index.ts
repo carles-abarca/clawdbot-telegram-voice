@@ -139,31 +139,33 @@ const channelPlugin = {
     },
   },
   gateway: {
-    start: async (ctx: { config: any; api: ClawdbotPluginApi }) => {
+    startAccount: async (ctx: any) => {
+      const account = ctx.account;
       const config = getPluginConfig(ctx.config);
+      
       if (!config?.enabled) {
-        ctx.api.logger.info("[telegram-userbot] Plugin disabled");
+        ctx.log?.info("[telegram-userbot] Plugin disabled");
         return;
       }
 
-      pluginApi = ctx.api;
+      pluginApi = ctx.runtime;
       pluginConfig = config;
 
-      ctx.api.logger.info("[telegram-userbot] Starting Telegram userbot bridge...");
+      ctx.log?.info(`[${account.accountId}] Starting Telegram userbot bridge...`);
 
       // Initialize STT
       if (config.stt) {
-        whisperSTT = new WhisperSTT(config.stt, ctx.api.logger);
-        ctx.api.logger.info("[telegram-userbot] Whisper STT initialized");
+        whisperSTT = new WhisperSTT(config.stt, ctx.log);
+        ctx.log.info("[telegram-userbot] Whisper STT initialized");
       }
 
       // Initialize TTS
       if (config.tts) {
-        piperTTS = new PiperTTS(config.tts, ctx.api.logger);
-        ctx.api.logger.info("[telegram-userbot] Piper TTS initialized");
+        piperTTS = new PiperTTS(config.tts, ctx.log);
+        ctx.log.info("[telegram-userbot] Piper TTS initialized");
       }
 
-      bridge = new TelegramBridge(config.telegram, ctx.api.logger);
+      bridge = new TelegramBridge(config.telegram, ctx.log);
 
       // Listen for incoming messages
       bridge.on("message:private", handleIncomingMessage);
@@ -171,22 +173,22 @@ const channelPlugin = {
 
       // Listen for connection events
       bridge.on("telegram:ready", (eventData: { name: string; username: string }) => {
-        ctx.api.logger.info(`[telegram-userbot] Connected as ${eventData.name} (@${eventData.username})`);
+        ctx.log.info(`[telegram-userbot] Connected as ${eventData.name} (@${eventData.username})`);
       });
 
       bridge.on("error", (error: Error) => {
-        ctx.api.logger.error(`[telegram-userbot] Bridge error: ${error.message}`);
+        ctx.log.error(`[telegram-userbot] Bridge error: ${error.message}`);
       });
 
       bridge.on("disconnected", () => {
-        ctx.api.logger.warn("[telegram-userbot] Bridge disconnected");
+        ctx.log.warn("[telegram-userbot] Bridge disconnected");
       });
 
       try {
         await bridge.start();
-        ctx.api.logger.info("[telegram-userbot] Bridge started successfully!");
+        ctx.log.info("[telegram-userbot] Bridge started successfully!");
       } catch (error) {
-        ctx.api.logger.error(`[telegram-userbot] Failed to start bridge: ${error}`);
+        ctx.log.error(`[telegram-userbot] Failed to start bridge: ${error}`);
         throw error;
       }
     },
