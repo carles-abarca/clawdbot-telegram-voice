@@ -1,418 +1,327 @@
 /**
- * Telegram Voice Plugin for Clawdbot
+ * Clawdbot Telegram Userbot Channel Plugin
  * 
- * 100% local voice calls using:
- * - Whisper.cpp for STT (speech-to-text)
- * - Piper for TTS (text-to-speech)
- * - pytgcalls for Telegram voice calls
+ * A channel plugin that uses a Telegram userbot (Pyrogram) for:
+ * - Text messaging
+ * - Voice notes (with Whisper STT / Piper TTS)
+ * - Voice calls (future)
  */
 
-import { Type } from "@sinclair/typebox";
-import fs from "node:fs";
-import path from "node:path";
-import { randomUUID } from "node:crypto";
-
-import {
-  telegramVoiceConfigSchema,
-  validateConfig,
-  type TelegramVoiceConfig,
-} from "./config.js";
 import { TelegramBridge } from "./telegram-bridge.js";
 import { WhisperSTT } from "./stt.js";
 import { PiperTTS } from "./tts.js";
-import { registerTelegramVoiceCli } from "./cli.js";
-import type {
-  CallRecord,
-  TelegramVoiceRuntime,
-  Logger,
-  TranscriptEntry,
-} from "./types.js";
 
-// Tool parameter schema
-const TelegramVoiceToolSchema = Type.Union([
-  Type.Object({
-    action: Type.Literal("status"),
-  }),
-  Type.Object({
-    action: Type.Literal("end"),
-    callId: Type.Optional(Type.String({ description: "Call ID (uses current if not specified)" })),
-  }),
-]);
-
-/**
- * Create the voice call runtime
- */
-async function createTelegramVoiceRuntime(params: {
-  config: TelegramVoiceConfig;
-  logger: Logger;
-}): Promise<TelegramVoiceRuntime> {
-  const { config, logger } = params;
-
-  // Initialize components
-  const bridge = new TelegramBridge(config.telegram, logger);
-  const stt = new WhisperSTT(config.stt, logger);
-  const tts = new PiperTTS(config.tts, logger);
-
-  // Current call state
-  let currentCall: CallRecord | null = null;
-  let started = false;
-
-  // Ensure log directory exists
-  if (!fs.existsSync(config.logPath)) {
-    fs.mkdirSync(config.logPath, { recursive: true });
-  }
-
-  // Log call events
-  function logCall(call: CallRecord): void {
-    const logPath = path.join(config.logPath, "calls.jsonl");
-    const entry = JSON.stringify({ ...call, loggedAt: Date.now() }) + "\n";
-    fs.appendFileSync(logPath, entry);
-  }
-
-  // Handle incoming audio from call
-  async function handleAudioReceived(data: { audioPath: string }): Promise<void> {
-    if (!currentCall) return;
-
-    try {
-      // Transcribe with Whisper
-      const result = await stt.transcribe(data.audioPath);
-      
-      if (result.text.trim()) {
-        // Add to transcript
-        const entry: TranscriptEntry = {
-          timestamp: Date.now(),
-          speaker: "user",
-          text: result.text,
-        };
-        currentCall.transcript.push(entry);
-
-        logger.info(`User said: "${result.text}"`);
-
-        // Emit event for Clawdbot to handle
-        bridge.emit("speech", {
-          callId: currentCall.callId,
-          text: result.text,
-          language: result.language,
-        });
-      }
-    } catch (error) {
-      logger.error(`Failed to transcribe audio: ${error}`);
-    }
-  }
-
-  // Setup bridge event handlers
-  bridge.on("audio:received", handleAudioReceived);
-
-  bridge.on("call:joined", (data) => {
-    logger.info(`Joined call with ${data.chat_id}`);
-    if (currentCall) {
-      currentCall.state = "active";
-      currentCall.answeredAt = Date.now();
-    }
-  });
-
-  bridge.on("call:left", (data) => {
-    logger.info(`Left call with ${data.chat_id}`);
-    if (currentCall) {
-      currentCall.state = "ended";
-      currentCall.endedAt = Date.now();
-      logCall(currentCall);
-      currentCall = null;
-    }
-  });
-
-  bridge.on("call:kicked", (data) => {
-    logger.warn(`Kicked from call ${data.chat_id}`);
-    if (currentCall) {
-      currentCall.state = "ended";
-      currentCall.endReason = "hangup-user";
-      currentCall.endedAt = Date.now();
-      logCall(currentCall);
-      currentCall = null;
-    }
-  });
-
-  // Runtime object
-  const runtime: TelegramVoiceRuntime = {
-    config,
-    bridge,
-    stt,
-    tts,
-
-    async start(): Promise<void> {
-      if (started) return;
-
-      logger.info("Starting Telegram Voice runtime...");
-
-      // Check STT/TTS availability
-      const sttAvailable = await stt.isAvailable();
-      const ttsAvailable = await tts.isAvailable();
-
-      if (!sttAvailable) {
-        logger.warn("Whisper STT not available - transcription disabled");
-      }
-      if (!ttsAvailable) {
-        logger.warn("Piper TTS not available - synthesis disabled");
-      }
-
-      // Start bridge
-      await bridge.start();
-      started = true;
-
-      logger.info("Telegram Voice runtime started");
-    },
-
-    async stop(): Promise<void> {
-      if (!started) return;
-
-      logger.info("Stopping Telegram Voice runtime...");
-
-      // End current call
-      if (currentCall) {
-        await this.endCall(currentCall.callId);
-      }
-
-      // Stop bridge
-      await bridge.stop();
-
-      // Cleanup temp files
-      stt.cleanup();
-      tts.cleanup();
-
-      started = false;
-      logger.info("Telegram Voice runtime stopped");
-    },
-
-    getCurrentCall(): CallRecord | null {
-      return currentCall;
-    },
-
-    async initiateCall(peerId: number): Promise<{ success: boolean; callId?: string; error?: string }> {
-      if (currentCall) {
-        return { success: false, error: "Already in a call" };
-      }
-
-      // Check if user is allowed
-      if (config.allowedUsers.length > 0 && !config.allowedUsers.includes(peerId)) {
-        return { success: false, error: "User not in allowlist" };
-      }
-
-      const callId = randomUUID();
-      currentCall = {
-        callId,
-        peerId,
-        direction: "outbound",
-        state: "initiating",
-        startedAt: Date.now(),
-        transcript: [],
-      };
-
-      try {
-        await bridge.joinCall(peerId);
-        return { success: true, callId };
-      } catch (error) {
-        currentCall = null;
-        return { success: false, error: String(error) };
-      }
-    },
-
-    async endCall(callId: string): Promise<{ success: boolean; error?: string }> {
-      if (!currentCall || currentCall.callId !== callId) {
-        return { success: false, error: "Call not found" };
-      }
-
-      try {
-        await bridge.leaveCall();
-        currentCall.state = "ended";
-        currentCall.endReason = "hangup-bot";
-        currentCall.endedAt = Date.now();
-        logCall(currentCall);
-        currentCall = null;
-        return { success: true };
-      } catch (error) {
-        return { success: false, error: String(error) };
-      }
-    },
+interface PluginApi {
+  config: any;
+  logger: {
+    info: (msg: string) => void;
+    error: (msg: string) => void;
+    warn: (msg: string) => void;
+    debug: (msg: string) => void;
   };
-
-  return runtime;
+  registerChannel: (opts: { plugin: ChannelPlugin }) => void;
+  runtime?: {
+    injectMessage?: (opts: InjectMessageOpts) => Promise<void>;
+  };
 }
 
-// Plugin definition
-const telegramVoicePlugin = {
+interface InjectMessageOpts {
+  channel: string;
+  accountId?: string;
+  senderId: string;
+  senderName?: string;
+  text: string;
+  mediaUrls?: string[];
+  replyTo?: string;
+  sessionKey?: string;
+}
+
+interface ChannelPlugin {
+  id: string;
+  meta: {
+    id: string;
+    label: string;
+    selectionLabel: string;
+    docsPath: string;
+    blurb: string;
+    aliases: string[];
+  };
+  capabilities: {
+    chatTypes: string[];
+    voice?: boolean;
+    voiceNotes?: boolean;
+  };
+  config: {
+    listAccountIds: (cfg: any) => string[];
+    resolveAccount: (cfg: any, accountId?: string) => any;
+  };
+  gateway?: {
+    start?: (ctx: GatewayContext) => Promise<void>;
+    stop?: () => Promise<void>;
+  };
+  outbound: {
+    deliveryMode: string;
+    sendText: (opts: SendTextOpts) => Promise<{ ok: boolean; error?: string }>;
+    sendVoice?: (opts: SendVoiceOpts) => Promise<{ ok: boolean; error?: string }>;
+  };
+}
+
+interface GatewayContext {
+  config: any;
+  api: PluginApi;
+}
+
+interface SendTextOpts {
+  to: string;
+  text: string;
+  accountId?: string;
+}
+
+interface SendVoiceOpts {
+  to: string;
+  audioPath: string;
+  accountId?: string;
+}
+
+// Global state
+let bridge: TelegramBridge | null = null;
+let pluginApi: PluginApi | null = null;
+let pluginConfig: any = null;
+let whisperSTT: WhisperSTT | null = null;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+let piperTTS: PiperTTS | null = null;
+
+/**
+ * Get plugin config from Clawdbot config
+ */
+function getPluginConfig(cfg: any): any | null {
+  const channelCfg = cfg.channels?.["telegram-voice"];
+  if (!channelCfg?.enabled) return null;
+  
+  return {
+    enabled: true,
+    telegram: {
+      apiId: channelCfg.apiId || channelCfg.telegram?.apiId,
+      apiHash: channelCfg.apiHash || channelCfg.telegram?.apiHash,
+      phone: channelCfg.phone || channelCfg.telegram?.phone,
+      sessionPath: channelCfg.sessionPath || process.env.HOME + "/jarvis-voice",
+      pythonEnvPath: channelCfg.pythonEnvPath || process.env.HOME + "/jarvis-voice-env",
+      allowedUsers: channelCfg.allowedUsers || [],
+    },
+    stt: channelCfg.stt || {
+      provider: "whisper-cpp",
+      whisperPath: process.env.HOME + "/whisper.cpp/build/bin/whisper-cli",
+      modelPath: process.env.HOME + "/whisper.cpp/models/ggml-small.bin",
+      language: "ca",
+    },
+    tts: channelCfg.tts || {
+      provider: "piper",
+      piperPath: process.env.HOME + "/piper/piper/piper",
+      voicePath: process.env.HOME + "/piper/voices/ca_ES-upc_pau-x_low.onnx",
+      lengthScale: 0.85,
+    },
+  };
+}
+
+/**
+ * Handle incoming message from userbot
+ */
+async function handleIncomingMessage(data: {
+  user_id: number;
+  username?: string;
+  text: string;
+  message_id: number;
+  voice_path?: string;
+  duration?: number;
+}) {
+  if (!pluginApi || !pluginConfig) {
+    console.error("[telegram-voice] Plugin not initialized");
+    return;
+  }
+
+  const logger = pluginApi.logger;
+  let messageText = data.text;
+
+  // If it's a voice message, transcribe it
+  if (data.voice_path && whisperSTT) {
+    logger.info(`[telegram-voice] Transcribing voice message from ${data.user_id}`);
+    try {
+      const result = await whisperSTT.transcribe(data.voice_path);
+      messageText = result.text;
+      logger.info(`[telegram-voice] Transcribed: "${result.text.substring(0, 50)}..."`);
+    } catch (error) {
+      logger.error(`[telegram-voice] Transcription failed: ${error}`);
+      messageText = "[Voice message - transcription failed]";
+    }
+  }
+
+  logger.info(`[telegram-voice] Message from ${data.username || data.user_id}: ${messageText.substring(0, 50)}...`);
+
+  // Inject message into Clawdbot session
+  if (pluginApi.runtime?.injectMessage) {
+    try {
+      await pluginApi.runtime.injectMessage({
+        channel: "telegram-voice",
+        senderId: String(data.user_id),
+        senderName: data.username || `User ${data.user_id}`,
+        text: messageText,
+        sessionKey: `agent:main:telegram-voice:dm:${data.user_id}`,
+      });
+    } catch (error) {
+      logger.error(`[telegram-voice] Failed to inject message: ${error}`);
+    }
+  } else {
+    logger.warn("[telegram-voice] runtime.injectMessage not available - message not processed");
+  }
+}
+
+/**
+ * Send text message via userbot
+ */
+async function sendText(opts: SendTextOpts): Promise<{ ok: boolean; error?: string }> {
+  if (!bridge?.isConnected) {
+    return { ok: false, error: "Bridge not connected" };
+  }
+
+  try {
+    await bridge.request("send_text", {
+      user_id: parseInt(opts.to, 10),
+      text: opts.text,
+    });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: String(error) };
+  }
+}
+
+/**
+ * Send voice message via userbot
+ */
+async function sendVoice(opts: SendVoiceOpts): Promise<{ ok: boolean; error?: string }> {
+  if (!bridge?.isConnected) {
+    return { ok: false, error: "Bridge not connected" };
+  }
+
+  try {
+    await bridge.request("send_voice", {
+      user_id: parseInt(opts.to, 10),
+      audio_path: opts.audioPath,
+    });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: String(error) };
+  }
+}
+
+/**
+ * Channel plugin definition
+ */
+const channelPlugin: ChannelPlugin = {
   id: "telegram-voice",
-  name: "Telegram Voice",
-  description: "Voice calls through Telegram with local STT/TTS (Whisper + Piper)",
-  configSchema: telegramVoiceConfigSchema,
-
-  register(api: {
-    pluginConfig: unknown;
-    logger: Logger;
-    config: unknown;
-    runtime: { tts?: unknown };
-    registerGatewayMethod: (name: string, handler: (ctx: { params: Record<string, unknown>; respond: (ok: boolean, payload?: unknown) => void }) => Promise<void>) => void;
-    registerTool: (tool: {
-      name: string;
-      label: string;
-      description: string;
-      parameters: unknown;
-      execute: (toolCallId: string, params: Record<string, unknown>) => Promise<{ content: { type: string; text: string }[]; details?: unknown }>;
-    }) => void;
-    registerCli: (handler: (ctx: { program: import("commander").Command }) => void, opts: { commands: string[] }) => void;
-    registerService: (service: { id: string; start: () => Promise<void>; stop: () => Promise<void> }) => void;
-  }) {
-    const cfg = telegramVoiceConfigSchema.parse(api.pluginConfig);
-    const validation = validateConfig(cfg);
-
-    if (!validation.valid) {
-      for (const error of validation.errors) {
-        api.logger.error(`[telegram-voice] Config error: ${error}`);
+  meta: {
+    id: "telegram-voice",
+    label: "Telegram Voice",
+    selectionLabel: "Telegram Userbot (Voice + Text)",
+    docsPath: "/channels/telegram-voice",
+    blurb: "Telegram userbot with voice calls, voice notes, and text messaging",
+    aliases: ["tg-voice", "tg-userbot"],
+  },
+  capabilities: {
+    chatTypes: ["direct"],
+    voice: true,
+    voiceNotes: true,
+  },
+  config: {
+    listAccountIds: (cfg) => {
+      const accounts = cfg.channels?.["telegram-voice"]?.accounts;
+      return accounts ? Object.keys(accounts) : ["default"];
+    },
+    resolveAccount: (cfg, accountId) => {
+      const channelCfg = cfg.channels?.["telegram-voice"];
+      if (channelCfg?.accounts) {
+        return channelCfg.accounts[accountId ?? "default"] ?? { accountId };
       }
-    }
-    for (const warning of validation.warnings) {
-      api.logger.warn(`[telegram-voice] ${warning}`);
-    }
-
-    let runtimePromise: Promise<TelegramVoiceRuntime> | null = null;
-    let runtime: TelegramVoiceRuntime | null = null;
-
-    const ensureRuntime = async (): Promise<TelegramVoiceRuntime> => {
-      if (!cfg.enabled) {
-        throw new Error("Telegram Voice plugin is disabled");
+      return { accountId: "default", ...channelCfg };
+    },
+  },
+  gateway: {
+    start: async (ctx) => {
+      const config = getPluginConfig(ctx.config);
+      if (!config?.enabled) {
+        ctx.api.logger.info("[telegram-voice] Plugin disabled");
+        return;
       }
-      if (!validation.valid) {
-        throw new Error(validation.errors.join("; "));
-      }
-      if (runtime) return runtime;
-      if (!runtimePromise) {
-        runtimePromise = createTelegramVoiceRuntime({
-          config: cfg,
-          logger: api.logger,
-        });
-      }
-      runtime = await runtimePromise;
-      return runtime;
-    };
 
-    const sendError = (respond: (ok: boolean, payload?: unknown) => void, err: unknown) => {
-      respond(false, { error: err instanceof Error ? err.message : String(err) });
-    };
+      pluginApi = ctx.api;
+      pluginConfig = config;
 
-    // Gateway methods
-    api.registerGatewayMethod("telegram-voice.status", async ({ respond }) => {
+      ctx.api.logger.info("[telegram-voice] Starting Telegram userbot bridge...");
+
+      // Initialize STT
+      if (config.stt) {
+        whisperSTT = new WhisperSTT(config.stt, ctx.api.logger);
+        ctx.api.logger.info("[telegram-voice] Whisper STT initialized");
+      }
+
+      // Initialize TTS
+      if (config.tts) {
+        piperTTS = new PiperTTS(config.tts, ctx.api.logger);
+        ctx.api.logger.info("[telegram-voice] Piper TTS initialized");
+      }
+
+      bridge = new TelegramBridge(config.telegram, ctx.api.logger);
+
+      // Listen for incoming messages
+      bridge.on("message:private", handleIncomingMessage);
+      bridge.on("message:voice", handleIncomingMessage);
+
+      // Listen for connection events
+      bridge.on("telegram:ready", (data) => {
+        ctx.api.logger.info(`[telegram-voice] Connected as ${data.name} (@${data.username})`);
+      });
+
+      bridge.on("error", (error) => {
+        ctx.api.logger.error(`[telegram-voice] Bridge error: ${error.message}`);
+      });
+
+      bridge.on("disconnected", () => {
+        ctx.api.logger.warn("[telegram-voice] Bridge disconnected");
+      });
+
       try {
-        const rt = await ensureRuntime();
-        const bridgeStatus = await rt.bridge.getStatus();
-        respond(true, {
-          ...bridgeStatus,
-          bridgeConnected: rt.bridge.isConnected,
-          currentCall: rt.getCurrentCall(),
-        });
-      } catch (err) {
-        sendError(respond, err);
+        await bridge.start();
+        ctx.api.logger.info("[telegram-voice] Bridge started successfully!");
+      } catch (error) {
+        ctx.api.logger.error(`[telegram-voice] Failed to start bridge: ${error}`);
+        throw error;
       }
-    });
-
-    api.registerGatewayMethod("telegram-voice.end", async ({ params, respond }) => {
-      try {
-        const rt = await ensureRuntime();
-        const currentCall = rt.getCurrentCall();
-        const callId = typeof params?.callId === "string" ? params.callId : currentCall?.callId;
-        
-        if (!callId) {
-          respond(false, { error: "No active call" });
-          return;
-        }
-
-        const result = await rt.endCall(callId);
-        respond(result.success, result);
-      } catch (err) {
-        sendError(respond, err);
+    },
+    stop: async () => {
+      if (bridge) {
+        await bridge.stop();
+        bridge = null;
       }
-    });
-
-    // Tool registration
-    api.registerTool({
-      name: "telegram_voice_call",
-      label: "Telegram Voice Call",
-      description: "Manage Telegram voice calls",
-      parameters: TelegramVoiceToolSchema,
-      async execute(_toolCallId, params) {
-        const json = (payload: unknown) => ({
-          content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
-          details: payload,
-        });
-
-        try {
-          const rt = await ensureRuntime();
-
-          if (params.action === "status") {
-            const bridgeStatus = await rt.bridge.getStatus();
-            return json({
-              ...bridgeStatus,
-              bridgeConnected: rt.bridge.isConnected,
-              currentCall: rt.getCurrentCall(),
-            });
-          }
-
-          if (params.action === "end") {
-            const currentCall = rt.getCurrentCall();
-            const callId = typeof params.callId === "string" ? params.callId : currentCall?.callId;
-            
-            if (!callId) {
-              return json({ success: false, error: "No active call" });
-            }
-
-            const result = await rt.endCall(callId);
-            return json(result);
-          }
-
-          return json({ error: "Unknown action" });
-        } catch (err) {
-          return json({ error: err instanceof Error ? err.message : String(err) });
-        }
-      },
-    });
-
-    // CLI registration
-    api.registerCli(
-      ({ program }) =>
-        registerTelegramVoiceCli({
-          program,
-          config: cfg,
-          ensureRuntime,
-          logger: api.logger,
-        }),
-      { commands: ["telegram-voice"] },
-    );
-
-    // Service registration
-    api.registerService({
-      id: "telegram-voice",
-      start: async () => {
-        if (!cfg.enabled) return;
-        try {
-          await ensureRuntime();
-          const rt = await runtimePromise!;
-          await rt.start();
-        } catch (err) {
-          api.logger.error(
-            `[telegram-voice] Failed to start: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      },
-      stop: async () => {
-        if (!runtimePromise) return;
-        try {
-          const rt = await runtimePromise;
-          await rt.stop();
-        } finally {
-          runtimePromise = null;
-          runtime = null;
-        }
-      },
-    });
+      pluginApi = null;
+      pluginConfig = null;
+      whisperSTT = null;
+      piperTTS = null;
+    },
+  },
+  outbound: {
+    deliveryMode: "direct",
+    sendText,
+    sendVoice,
   },
 };
 
-export default telegramVoicePlugin;
+/**
+ * Plugin registration
+ */
+export default function register(api: PluginApi) {
+  api.logger.info("[telegram-voice] Registering channel plugin...");
+  api.registerChannel({ plugin: channelPlugin });
+  api.logger.info("[telegram-voice] Channel plugin registered!");
+}
+
+export { TelegramBridge } from "./telegram-bridge.js";
+export type { TelegramVoiceConfig } from "./config.js";

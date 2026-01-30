@@ -166,6 +166,33 @@ class TelegramVoiceBridge:
                     self.send_response(req_id, True)
                 except Exception as e:
                     self.send_response(req_id, False, error=str(e))
+            
+            elif action == "send_text":
+                user_id = payload.get("user_id")
+                text = payload.get("text")
+                if not user_id or not text:
+                    self.send_response(req_id, False, error="user_id and text required")
+                    return
+                try:
+                    await self.app.send_message(user_id, text)
+                    self.send_response(req_id, True)
+                except Exception as e:
+                    self.send_response(req_id, False, error=str(e))
+            
+            elif action == "send_voice":
+                user_id = payload.get("user_id")
+                audio_path = payload.get("audio_path")
+                if not user_id or not audio_path:
+                    self.send_response(req_id, False, error="user_id and audio_path required")
+                    return
+                if not os.path.exists(audio_path):
+                    self.send_response(req_id, False, error=f"audio file not found: {audio_path}")
+                    return
+                try:
+                    await self.app.send_voice(user_id, audio_path)
+                    self.send_response(req_id, True)
+                except Exception as e:
+                    self.send_response(req_id, False, error=str(e))
                     
             elif action == "shutdown":
                 self.running = False
@@ -211,17 +238,31 @@ class TelegramVoiceBridge:
             chat_id = getattr(update, 'chat_id', None)
             self.emit_event("stream.ended", {"chat_id": chat_id})
             
-        # Handle incoming private messages (for potential call invites)
+        # Handle incoming private messages (text and voice)
         @self.app.on_message(filters.private & filters.incoming)
         async def on_private_message(client: Client, message: Message):
             user_id = message.from_user.id if message.from_user else None
-            if user_id and self.is_user_allowed(user_id):
-                self.emit_event("message.private", {
-                    "user_id": user_id,
-                    "username": message.from_user.username,
-                    "text": message.text or "",
-                    "message_id": message.id
-                })
+            if not user_id or not self.is_user_allowed(user_id):
+                return
+            
+            event_data = {
+                "user_id": user_id,
+                "username": message.from_user.username,
+                "text": message.text or "",
+                "message_id": message.id,
+                "voice_path": None,
+                "duration": None,
+            }
+            
+            # Handle voice messages
+            if message.voice:
+                voice_path = f"/tmp/voice_{user_id}_{message.id}.ogg"
+                await message.download(voice_path)
+                event_data["voice_path"] = voice_path
+                event_data["duration"] = message.voice.duration
+                self.emit_event("message.voice", event_data)
+            else:
+                self.emit_event("message.private", event_data)
                 
     async def run(self):
         """Main run loop"""
