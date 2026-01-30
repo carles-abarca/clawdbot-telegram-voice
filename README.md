@@ -1,36 +1,71 @@
-# @carles-abarca/clawdbot-telegram-voice
+# telegram-userbot
 
-🎙️ **Telegram Voice Calls Plugin for Clawdbot**
+🎙️ **Telegram Userbot Plugin for Clawdbot**
 
-Have real voice conversations with your Clawdbot assistant through Telegram - 100% local, 100% free!
+Text and voice conversations with your Clawdbot assistant through Telegram userbot - 100% local STT/TTS!
 
 ## ✨ Features
 
-- 📞 **Voice calls via Telegram** - Call your assistant like calling a friend
-- 🎤 **Local STT** - Whisper.cpp for speech-to-text (no API costs)
-- 🔊 **Local TTS** - Piper for text-to-speech (no API costs)
-- 🧠 **Full Clawdbot integration** - Personality, memory, tools, everything
-- 💰 **Zero operational costs** - Everything runs locally
-- 🔒 **Privacy-first** - Audio never leaves your server
+- 💬 **Text messaging** - Chat with your assistant via Telegram
+- 🎤 **Voice notes** - Send/receive voice messages
+- 📞 **Voice calls** - Real-time voice conversations (WIP)
+- 🔊 **Local STT** - Whisper.cpp for speech-to-text (no API costs)
+- 🔈 **Local TTS** - Piper for text-to-speech (no API costs)
+- 🧠 **Full Clawdbot integration** - Personality, memory, tools
+
+## ⚠️ Userbot vs Bot
+
+This plugin uses a **Telegram userbot** (MTProto API), NOT a BotFather bot:
+
+| BotFather Bot | Userbot (this plugin) |
+|---------------|----------------------|
+| Bot API | MTProto API (Pyrogram) |
+| Cannot make calls | ✅ Can make voice calls |
+| Limited features | Full user access |
+| grammY/Telegraf | Pyrogram |
 
 ## 📋 Requirements
 
 - Clawdbot >= 2026.1.0
-- Python 3.10+
+- Python 3.10+ with Pyrogram
 - [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) (compiled)
 - [Piper TTS](https://github.com/rhasspy/piper) (with voice models)
-- Telegram account (for userbot)
 - Telegram API credentials from [my.telegram.org](https://my.telegram.org)
 
-## 🚀 Quick Start
+## 🚀 Installation
 
-### 1. Install the plugin
+### Option 1: Link for development
 
 ```bash
-clawdbot plugins install @carles-abarca/clawdbot-telegram-voice
+# Clone the repo
+git clone https://github.com/carles-abarca/clawdbot-telegram-userbot
+cd clawdbot-telegram-userbot
+npm install
+
+# Link to Clawdbot
+clawdbot plugins install -l .
+# Or manually:
+ln -s $(pwd) ~/.clawdbot/extensions/telegram-userbot
+
+# Enable
+clawdbot plugins enable telegram-userbot
 ```
 
-### 2. Configure
+### Option 2: Add to load paths
+
+Add to `~/.clawdbot/clawdbot.json`:
+
+```json
+{
+  "plugins": {
+    "load": {
+      "paths": ["/path/to/clawdbot-telegram-userbot"]
+    }
+  }
+}
+```
+
+## ⚙️ Configuration
 
 Add to your `clawdbot.json`:
 
@@ -38,23 +73,26 @@ Add to your `clawdbot.json`:
 {
   "plugins": {
     "entries": {
-      "telegram-voice": {
+      "telegram-userbot": {
         "enabled": true,
         "config": {
           "telegram": {
             "apiId": 12345678,
             "apiHash": "your_api_hash",
-            "phone": "+1234567890"
+            "phone": "+1234567890",
+            "sessionPath": "/path/to/session/dir"
           },
           "stt": {
             "provider": "whisper-cpp",
             "whisperPath": "/path/to/whisper-cli",
-            "modelPath": "/path/to/ggml-small.bin"
+            "modelPath": "/path/to/ggml-small.bin",
+            "language": "auto"
           },
           "tts": {
             "provider": "piper",
             "piperPath": "/path/to/piper",
-            "voicePath": "/path/to/voice.onnx"
+            "voicePath": "/path/to/voice.onnx",
+            "lengthScale": 0.85
           },
           "allowedUsers": [123456789]  // Telegram user IDs
         }
@@ -64,126 +102,140 @@ Add to your `clawdbot.json`:
 }
 ```
 
-### 3. First run (authentication)
+## 🔧 Plugin Structure (for developers)
 
-```bash
-clawdbot telegram-voice auth
-# Follow prompts to enter verification code
+### Required files for a Clawdbot plugin:
+
+```
+telegram-userbot/
+├── index.ts              # Entry point (exports plugin object)
+├── clawdbot.plugin.json  # Plugin manifest
+├── package.json          # With clawdbot.extensions field
+├── src/
+│   ├── telegram-bridge.ts
+│   ├── stt.ts
+│   └── tts.ts
+└── dist/                 # Compiled JS (optional if using jiti)
 ```
 
-### 4. Start
+### clawdbot.plugin.json
 
-```bash
-clawdbot gateway start
+```json
+{
+  "id": "telegram-userbot",
+  "channels": ["telegram-userbot"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": { ... }
+  }
+}
 ```
 
-Now call your Telegram userbot number! 📱
+### package.json (critical fields)
+
+```json
+{
+  "name": "telegram-userbot",  // Must match plugin id!
+  "clawdbot": {
+    "extensions": ["./index.ts"],
+    "channel": {
+      "id": "telegram-userbot",
+      "label": "Telegram Userbot",
+      ...
+    }
+  }
+}
+```
+
+### index.ts (export format)
+
+```typescript
+import type { ClawdbotPluginApi } from "clawdbot/plugin-sdk";
+
+const plugin = {
+  id: "telegram-userbot",           // Must match manifest id
+  name: "Telegram Userbot",
+  description: "...",
+  configSchema: { ... },
+  register(api: ClawdbotPluginApi) {
+    api.registerChannel({ plugin: channelPlugin });
+  },
+};
+
+export default plugin;  // Export object, not function!
+```
+
+### Key learnings:
+
+1. **Plugin ID consistency**: The `id` must match in:
+   - `clawdbot.plugin.json` → `id`
+   - `package.json` → `name` (without scope)
+   - `index.ts` → `plugin.id`
+
+2. **Discovery paths**: Clawdbot finds plugins at:
+   - `~/.clawdbot/extensions/*/index.ts`
+   - `plugins.load.paths` in config
+
+3. **Export format**: Must export an object with `{ id, name, register() }`, not a function directly.
+
+4. **TypeScript**: Clawdbot uses jiti to load `.ts` files directly.
 
 ## 🏗️ Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                 Telegram (your phone)                       │
-│                 - Text messages                             │
-│                 - Voice calls                               │
+│                    Telegram App                             │
+│              (Text / Voice / Calls)                         │
 └─────────────────────────┬───────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────┐
-│              Plugin: telegram-voice                         │
+│                telegram-userbot plugin                      │
 │  ┌────────────────────────────────────────────────────────┐ │
-│  │  pytgcalls (Python) ←→ Node.js bridge                 │ │
-│  │  - Receives voice stream                               │ │
-│  │  - Sends audio response                                │ │
+│  │     Pyrogram (Python) ←→ Node.js Bridge               │ │
 │  └──────────┬─────────────────────────────┬───────────────┘ │
 │             │                             │                 │
 │             ▼                             ▼                 │
-│  ┌──────────────────┐          ┌──────────────────────┐     │
-│  │  Whisper.cpp     │          │  Piper TTS           │     │
-│  │  (Local STT)     │          │  (Local TTS)         │     │
-│  └────────┬─────────┘          └──────────▲───────────┘     │
+│  ┌──────────────────┐          ┌──────────────────────┐    │
+│  │  Whisper.cpp     │          │  Piper TTS           │    │
+│  │  (Local STT)     │          │  (Local TTS)         │    │
+│  └────────┬─────────┘          └──────────▲───────────┘    │
 │           │                               │                 │
-│           └───────────┬───────────────────┘                 │
+│           └───────────────────────────────┘                 │
+│                       │                                     │
 │                       ▼                                     │
 │  ┌────────────────────────────────────────────────────────┐ │
 │  │              Clawdbot Core                             │ │
-│  │  - Agent personality (SOUL.md)                         │ │
-│  │  - Memory (MEMORY.md)                                  │ │
-│  │  - Tools (calendar, email, etc.)                       │ │
-│  │  - Claude API (your subscription)                      │ │
+│  │  - Claude API                                          │ │
+│  │  - Personality, Memory, Tools                          │ │
 │  └────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## 💰 Cost Comparison
+## 🎤 Voice Models
 
-| Component | This Plugin | Cloud Alternative |
-|-----------|-------------|-------------------|
-| STT | $0 (Whisper local) | ~$0.006/min (Whisper API) |
-| TTS | $0 (Piper local) | ~$0.03/1K chars (ElevenLabs) |
-| LLM | $0 (Claude Max sub) | ~$0.015/1K tokens |
-| **Total per hour** | **$0** | **~$5-15** |
-
-## 🎤 Supported Voice Models
-
-### Piper TTS (recommended)
+### Piper TTS
 - 🇬🇧 English: `en_US-lessac-medium`
 - 🇪🇸 Spanish: `es_ES-sharvard-medium`
-- 🇫🇷 French: `fr_FR-upmc-medium`
-- 🇩🇪 German: `de_DE-thorsten-medium`
-- 🏴󠁥󠁳󠁣󠁴󠁿 Catalan: `ca_ES-upc_ona-medium`
+- 🏴󠁥󠁳󠁣󠁴󠁿 Catalan: `ca_ES-upc_ona-medium`, `ca_ES-upc_pau-x_low`
 - [Full list](https://rhasspy.github.io/piper-samples/)
 
 ### Whisper.cpp Models
-- `tiny` - Fastest, lower accuracy
-- `base` - Good balance
+- `tiny` - Fastest
 - `small` - Recommended ✅
-- `medium` - Better accuracy, slower
-- `large` - Best accuracy, slowest
+- `medium` - Better accuracy
+- `large` - Best accuracy
 
-## 🛠️ CLI Commands
+## 📊 Status
 
-```bash
-# Authentication
-clawdbot telegram-voice auth
-
-# Status
-clawdbot telegram-voice status
-
-# Test TTS
-clawdbot telegram-voice test-tts "Hello world"
-
-# Test STT
-clawdbot telegram-voice test-stt /path/to/audio.wav
-
-# Logs
-clawdbot telegram-voice logs --follow
-```
-
-## 📊 Latency
-
-Expected latency per turn:
-
-| Step | Time |
-|------|------|
-| Audio capture | ~100ms |
-| Whisper STT | 500ms - 2s |
-| Claude response | 1s - 3s |
-| Piper TTS | 100ms - 300ms |
-| Audio playback | ~100ms |
-| **Total** | **~2-5 seconds** |
-
-## 🤝 Contributing
-
-Contributions welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md).
+- ✅ Text messaging
+- ✅ Voice notes (send/receive)
+- ✅ Whisper STT integration
+- ✅ Piper TTS integration
+- ⏳ Voice calls (in progress)
+- ⏳ Full Clawdbot session integration
 
 ## 📜 License
 
 MIT © [Carles Abarca](https://github.com/carlesabarca)
-
-## 🙏 Acknowledgments
-
-- [Clawdbot](https://github.com/clawdbot/clawdbot) - The amazing AI assistant framework
-- [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) - Fast local speech recognition
-- [Piper](https://github.com/rhasspy/piper) - High quality local TTS
-- [pytgcalls](https://github.com/pytgcalls/pytgcalls) - Telegram voice calls library

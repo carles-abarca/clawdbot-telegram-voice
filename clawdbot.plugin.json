@@ -1,112 +1,48 @@
 {
-  "$schema": "https://docs.clawd.bot/schemas/plugin.json",
-  "name": "telegram-userbot",
-  "displayName": "Telegram Userbot",
-  "description": "Text and voice conversations via Telegram userbot - 100% local STT/TTS stack",
-  "version": "0.2.0",
-  "author": {
-    "name": "Carles Abarca",
-    "email": "carles@silverbacking.ai",
-    "url": "https://github.com/carlesabarca"
-  },
-  "repository": "https://github.com/carlesabarca/clawdbot-telegram-userbot",
-  "license": "MIT",
-  "keywords": ["telegram", "userbot", "voice", "text", "whisper", "piper", "local"],
-  
-  "entry": "dist/index.js",
-  
-  "capabilities": {
-    "channel": true,
-    "tools": true,
-    "commands": true
-  },
-  
-  "config": {
+  "id": "telegram-userbot",
+  "channels": ["telegram-userbot"],
+  "configSchema": {
     "type": "object",
+    "additionalProperties": true,
     "properties": {
       "telegram": {
         "type": "object",
         "properties": {
-          "apiId": { "type": "number", "description": "Telegram API ID from my.telegram.org" },
-          "apiHash": { "type": "string", "description": "Telegram API Hash" },
-          "phone": { "type": "string", "description": "Phone number with country code" },
-          "sessionPath": { "type": "string", "description": "Path to session file" }
+          "apiId": { "type": "number" },
+          "apiHash": { "type": "string" },
+          "phone": { "type": "string" },
+          "sessionPath": { "type": "string" }
         },
         "required": ["apiId", "apiHash", "phone"]
       },
       "stt": {
         "type": "object",
         "properties": {
-          "provider": { "type": "string", "enum": ["whisper-cpp", "whisper-api"], "default": "whisper-cpp" },
-          "whisperPath": { "type": "string", "description": "Path to whisper-cli binary" },
-          "modelPath": { "type": "string", "description": "Path to Whisper model (.bin)" },
-          "language": { "type": "string", "default": "auto" }
+          "provider": { "type": "string" },
+          "whisperPath": { "type": "string" },
+          "modelPath": { "type": "string" },
+          "language": { "type": "string" }
         }
       },
       "tts": {
         "type": "object",
         "properties": {
-          "provider": { "type": "string", "enum": ["piper", "openai", "elevenlabs"], "default": "piper" },
-          "piperPath": { "type": "string", "description": "Path to piper binary" },
-          "voicePath": { "type": "string", "description": "Path to voice model (.onnx)" }
+          "provider": { "type": "string" },
+          "piperPath": { "type": "string" },
+          "voicePath": { "type": "string" }
         }
       },
       "allowedUsers": {
         "type": "array",
-        "items": { "type": "number" },
-        "description": "Telegram user IDs allowed to interact"
-      },
-      "autoAnswer": {
-        "type": "boolean",
-        "default": true,
-        "description": "Automatically answer incoming calls"
+        "items": { "type": "number" }
       }
-    },
-    "required": ["telegram"]
+    }
   },
-  
-  "tools": [
-    {
-      "name": "telegram_userbot",
-      "description": "Control Telegram userbot - send messages and manage voice calls",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "action": {
-            "type": "string",
-            "enum": ["status", "send", "call_status", "call_end"],
-            "description": "Action to perform"
-          },
-          "userId": {
-            "type": "number",
-            "description": "Telegram user ID"
-          },
-          "text": {
-            "type": "string",
-            "description": "Text message to send"
-          }
-        },
-        "required": ["action"]
-      }
-    }
-  ],
-  
-  "commands": [
-    {
-      "name": "telegram-userbot",
-      "description": "Manage Telegram userbot",
-      "subcommands": [
-        { "name": "auth", "description": "Authenticate with Telegram" },
-        { "name": "status", "description": "Show connection status" },
-        { "name": "test-tts", "description": "Test text-to-speech" },
-        { "name": "test-stt", "description": "Test speech-to-text" },
-        { "name": "logs", "description": "View plugin logs" }
-      ]
-    }
-  ],
-  
-  "dependencies": {
-    "system": ["python3", "ffmpeg"],
-    "python": ["pyrofork", "py-tgcalls", "tgcrypto"]
+  "uiHints": {
+    "telegram.apiId": { "label": "Telegram API ID", "help": "Get from my.telegram.org" },
+    "telegram.apiHash": { "label": "Telegram API Hash", "sensitive": true },
+    "telegram.phone": { "label": "Phone Number", "placeholder": "+1234567890" },
+    "telegram.sessionPath": { "label": "Session Path" },
+    "allowedUsers": { "label": "Allowed User IDs" }
   }
 }
