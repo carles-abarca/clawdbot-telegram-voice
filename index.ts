@@ -122,8 +122,21 @@ const channelPlugin = {
     voiceNotes: true,
   },
   config: {
-    listAccountIds: () => ["default"],
-    resolveAccount: (_cfg: any, accountId?: string) => ({ accountId: accountId ?? "default" }),
+    listAccountIds: (cfg: any) => {
+      // Only return account if channel is configured
+      const channelCfg = cfg.channels?.["telegram-userbot"];
+      if (channelCfg && channelCfg.enabled !== false && channelCfg.apiId) {
+        return ["default"];
+      }
+      return [];
+    },
+    resolveAccount: (cfg: any, accountId?: string) => {
+      const channelCfg = cfg.channels?.["telegram-userbot"];
+      return { 
+        accountId: accountId ?? "default",
+        ...channelCfg,
+      };
+    },
   },
   gateway: {
     start: async (ctx: { config: any; api: ClawdbotPluginApi }) => {
