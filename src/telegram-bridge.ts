@@ -231,10 +231,15 @@ class TelegramVoiceBridge:
                 
     def setup_message_handlers(self):
         """Setup Pyrogram message handlers - MUST be called BEFORE app.start()"""
+        bridge = self  # Capture self for closure
         
         async def on_private_message(client: Client, message: Message):
+            # Debug log
+            bridge.emit_event("debug", {"msg": f"Received message from {message.from_user.id if message.from_user else 'unknown'}"})
+            
             user_id = message.from_user.id if message.from_user else None
-            if not user_id or not self.is_user_allowed(user_id):
+            if not user_id or not bridge.is_user_allowed(user_id):
+                bridge.emit_event("debug", {"msg": f"User {user_id} not allowed or invalid"})
                 return
             
             # Mark message as read (blue double tick)
@@ -258,9 +263,9 @@ class TelegramVoiceBridge:
                 await message.download(voice_path)
                 event_data["voice_path"] = voice_path
                 event_data["duration"] = message.voice.duration
-                self.emit_event("message.voice", event_data)
+                bridge.emit_event("message.voice", event_data)
             else:
-                self.emit_event("message.private", event_data)
+                bridge.emit_event("message.private", event_data)
         
         # Register handler using add_handler (works before start)
         self.app.add_handler(MessageHandler(on_private_message, filters.private & filters.incoming))
