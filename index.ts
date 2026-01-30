@@ -141,10 +141,25 @@ const channelPlugin = {
   gateway: {
     startAccount: async (ctx: any) => {
       const account = ctx.account;
-      const config = getPluginConfig(ctx.config);
+      const accountConfig = account.config || account;
       
-      if (!config?.enabled) {
-        ctx.log?.info("[telegram-userbot] Plugin disabled");
+      // Build config from account
+      const config: TelegramUserbotConfig = {
+        enabled: true,
+        telegram: {
+          apiId: accountConfig.apiId,
+          apiHash: accountConfig.apiHash,
+          phone: accountConfig.phone,
+          sessionPath: accountConfig.sessionPath || process.env.HOME + "/.clawdbot/telegram-userbot/session",
+          pythonEnvPath: accountConfig.pythonEnvPath || process.env.HOME + "/.clawdbot/telegram-userbot/venv",
+          allowedUsers: accountConfig.allowedUsers || [],
+        },
+        stt: accountConfig.stt,
+        tts: accountConfig.tts,
+      };
+      
+      if (!config.telegram.apiId) {
+        ctx.log?.error("[telegram-userbot] Missing apiId in config");
         return;
       }
 
