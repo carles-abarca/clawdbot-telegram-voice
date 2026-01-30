@@ -1,17 +1,17 @@
 {
   "$schema": "https://docs.clawd.bot/schemas/plugin.json",
-  "name": "telegram-voice",
-  "displayName": "Telegram Voice Calls",
-  "description": "Voice conversations with your Clawdbot assistant through Telegram - 100% local stack",
-  "version": "0.1.0",
+  "name": "telegram-userbot",
+  "displayName": "Telegram Userbot",
+  "description": "Text and voice conversations via Telegram userbot - 100% local STT/TTS stack",
+  "version": "0.2.0",
   "author": {
     "name": "Carles Abarca",
     "email": "carles@silverbacking.ai",
     "url": "https://github.com/carlesabarca"
   },
-  "repository": "https://github.com/carlesabarca/clawdbot-telegram-voice",
+  "repository": "https://github.com/carlesabarca/clawdbot-telegram-userbot",
   "license": "MIT",
-  "keywords": ["telegram", "voice", "calls", "whisper", "piper", "local"],
+  "keywords": ["telegram", "userbot", "voice", "text", "whisper", "piper", "local"],
   
   "entry": "dist/index.js",
   
@@ -29,7 +29,8 @@
         "properties": {
           "apiId": { "type": "number", "description": "Telegram API ID from my.telegram.org" },
           "apiHash": { "type": "string", "description": "Telegram API Hash" },
-          "phone": { "type": "string", "description": "Phone number with country code" }
+          "phone": { "type": "string", "description": "Phone number with country code" },
+          "sessionPath": { "type": "string", "description": "Path to session file" }
         },
         "required": ["apiId", "apiHash", "phone"]
       },
@@ -53,7 +54,7 @@
       "allowedUsers": {
         "type": "array",
         "items": { "type": "number" },
-        "description": "Telegram user IDs allowed to call"
+        "description": "Telegram user IDs allowed to interact"
       },
       "autoAnswer": {
         "type": "boolean",
@@ -66,19 +67,23 @@
   
   "tools": [
     {
-      "name": "telegram_voice_call",
-      "description": "Initiate or manage Telegram voice calls",
+      "name": "telegram_userbot",
+      "description": "Control Telegram userbot - send messages and manage voice calls",
       "parameters": {
         "type": "object",
         "properties": {
           "action": {
             "type": "string",
-            "enum": ["status", "end"],
+            "enum": ["status", "send", "call_status", "call_end"],
             "description": "Action to perform"
           },
           "userId": {
             "type": "number",
             "description": "Telegram user ID"
+          },
+          "text": {
+            "type": "string",
+            "description": "Text message to send"
           }
         },
         "required": ["action"]
@@ -88,8 +93,8 @@
   
   "commands": [
     {
-      "name": "telegram-voice",
-      "description": "Manage Telegram voice calls",
+      "name": "telegram-userbot",
+      "description": "Manage Telegram userbot",
       "subcommands": [
         { "name": "auth", "description": "Authenticate with Telegram" },
         { "name": "status", "description": "Show connection status" },
@@ -102,6 +107,6 @@
   
   "dependencies": {
     "system": ["python3", "ffmpeg"],
-    "python": ["pyrogram", "py-tgcalls", "tgcrypto"]
+    "python": ["pyrofork", "py-tgcalls", "tgcrypto"]
   }
 }

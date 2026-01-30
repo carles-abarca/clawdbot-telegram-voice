@@ -93,19 +93,31 @@ let piperTTS: PiperTTS | null = null;
 
 /**
  * Get plugin config from Clawdbot config
+ * Looks in both plugins.entries["telegram-userbot"].config AND channels["telegram-userbot"]
  */
 function getPluginConfig(cfg: any): any | null {
-  const channelCfg = cfg.channels?.["telegram-voice"];
-  if (!channelCfg?.enabled) return null;
+  // Try plugin config first (from plugins.entries)
+  let channelCfg = cfg.plugins?.entries?.["telegram-userbot"]?.config;
+  
+  // Fallback to channels config
+  if (!channelCfg) {
+    channelCfg = cfg.channels?.["telegram-userbot"];
+  }
+  
+  if (!channelCfg) return null;
+  
+  // Check enabled status (plugin enabled in entries OR channel enabled)
+  const pluginEnabled = cfg.plugins?.entries?.["telegram-userbot"]?.enabled;
+  if (!pluginEnabled && !channelCfg?.enabled) return null;
   
   return {
     enabled: true,
     telegram: {
-      apiId: channelCfg.apiId || channelCfg.telegram?.apiId,
-      apiHash: channelCfg.apiHash || channelCfg.telegram?.apiHash,
-      phone: channelCfg.phone || channelCfg.telegram?.phone,
-      sessionPath: channelCfg.sessionPath || process.env.HOME + "/jarvis-voice",
-      pythonEnvPath: channelCfg.pythonEnvPath || process.env.HOME + "/jarvis-voice-env",
+      apiId: channelCfg.telegram?.apiId || channelCfg.apiId,
+      apiHash: channelCfg.telegram?.apiHash || channelCfg.apiHash,
+      phone: channelCfg.telegram?.phone || channelCfg.phone,
+      sessionPath: channelCfg.telegram?.sessionPath || channelCfg.sessionPath || process.env.HOME + "/jarvis-voice",
+      pythonEnvPath: channelCfg.telegram?.pythonEnvPath || channelCfg.pythonEnvPath || process.env.HOME + "/jarvis-voice-env",
       allowedUsers: channelCfg.allowedUsers || [],
     },
     stt: channelCfg.stt || {
@@ -135,7 +147,7 @@ async function handleIncomingMessage(data: {
   duration?: number;
 }) {
   if (!pluginApi || !pluginConfig) {
-    console.error("[telegram-voice] Plugin not initialized");
+    console.error("[telegram-userbot] Plugin not initialized");
     return;
   }
 
@@ -144,34 +156,34 @@ async function handleIncomingMessage(data: {
 
   // If it's a voice message, transcribe it
   if (data.voice_path && whisperSTT) {
-    logger.info(`[telegram-voice] Transcribing voice message from ${data.user_id}`);
+    logger.info(`[telegram-userbot] Transcribing voice message from ${data.user_id}`);
     try {
       const result = await whisperSTT.transcribe(data.voice_path);
       messageText = result.text;
-      logger.info(`[telegram-voice] Transcribed: "${result.text.substring(0, 50)}..."`);
+      logger.info(`[telegram-userbot] Transcribed: "${result.text.substring(0, 50)}..."`);
     } catch (error) {
-      logger.error(`[telegram-voice] Transcription failed: ${error}`);
+      logger.error(`[telegram-userbot] Transcription failed: ${error}`);
       messageText = "[Voice message - transcription failed]";
     }
   }
 
-  logger.info(`[telegram-voice] Message from ${data.username || data.user_id}: ${messageText.substring(0, 50)}...`);
+  logger.info(`[telegram-userbot] Message from ${data.username || data.user_id}: ${messageText.substring(0, 50)}...`);
 
   // Inject message into Clawdbot session
   if (pluginApi.runtime?.injectMessage) {
     try {
       await pluginApi.runtime.injectMessage({
-        channel: "telegram-voice",
+        channel: "telegram-userbot",
         senderId: String(data.user_id),
         senderName: data.username || `User ${data.user_id}`,
         text: messageText,
-        sessionKey: `agent:main:telegram-voice:dm:${data.user_id}`,
+        sessionKey: `agent:main:telegram-userbot:dm:${data.user_id}`,
       });
     } catch (error) {
-      logger.error(`[telegram-voice] Failed to inject message: ${error}`);
+      logger.error(`[telegram-userbot] Failed to inject message: ${error}`);
     }
   } else {
-    logger.warn("[telegram-voice] runtime.injectMessage not available - message not processed");
+    logger.warn("[telegram-userbot] runtime.injectMessage not available - message not processed");
   }
 }
 
@@ -217,14 +229,14 @@ async function sendVoice(opts: SendVoiceOpts): Promise<{ ok: boolean; error?: st
  * Channel plugin definition
  */
 const channelPlugin: ChannelPlugin = {
-  id: "telegram-voice",
+  id: "telegram-userbot",
   meta: {
-    id: "telegram-voice",
-    label: "Telegram Voice",
+    id: "telegram-userbot",
+    label: "Telegram Userbot",
     selectionLabel: "Telegram Userbot (Voice + Text)",
-    docsPath: "/channels/telegram-voice",
+    docsPath: "/channels/telegram-userbot",
     blurb: "Telegram userbot with voice calls, voice notes, and text messaging",
-    aliases: ["tg-voice", "tg-userbot"],
+    aliases: ["tg-userbot", "tg-userbot"],
   },
   capabilities: {
     chatTypes: ["direct"],
@@ -233,11 +245,11 @@ const channelPlugin: ChannelPlugin = {
   },
   config: {
     listAccountIds: (cfg) => {
-      const accounts = cfg.channels?.["telegram-voice"]?.accounts;
+      const accounts = cfg.channels?.["telegram-userbot"]?.accounts;
       return accounts ? Object.keys(accounts) : ["default"];
     },
     resolveAccount: (cfg, accountId) => {
-      const channelCfg = cfg.channels?.["telegram-voice"];
+      const channelCfg = cfg.channels?.["telegram-userbot"];
       if (channelCfg?.accounts) {
         return channelCfg.accounts[accountId ?? "default"] ?? { accountId };
       }
@@ -248,25 +260,25 @@ const channelPlugin: ChannelPlugin = {
     start: async (ctx) => {
       const config = getPluginConfig(ctx.config);
       if (!config?.enabled) {
-        ctx.api.logger.info("[telegram-voice] Plugin disabled");
+        ctx.api.logger.info("[telegram-userbot] Plugin disabled");
         return;
       }
 
       pluginApi = ctx.api;
       pluginConfig = config;
 
-      ctx.api.logger.info("[telegram-voice] Starting Telegram userbot bridge...");
+      ctx.api.logger.info("[telegram-userbot] Starting Telegram userbot bridge...");
 
       // Initialize STT
       if (config.stt) {
         whisperSTT = new WhisperSTT(config.stt, ctx.api.logger);
-        ctx.api.logger.info("[telegram-voice] Whisper STT initialized");
+        ctx.api.logger.info("[telegram-userbot] Whisper STT initialized");
       }
 
       // Initialize TTS
       if (config.tts) {
         piperTTS = new PiperTTS(config.tts, ctx.api.logger);
-        ctx.api.logger.info("[telegram-voice] Piper TTS initialized");
+        ctx.api.logger.info("[telegram-userbot] Piper TTS initialized");
       }
 
       bridge = new TelegramBridge(config.telegram, ctx.api.logger);
@@ -277,22 +289,22 @@ const channelPlugin: ChannelPlugin = {
 
       // Listen for connection events
       bridge.on("telegram:ready", (data) => {
-        ctx.api.logger.info(`[telegram-voice] Connected as ${data.name} (@${data.username})`);
+        ctx.api.logger.info(`[telegram-userbot] Connected as ${data.name} (@${data.username})`);
       });
 
       bridge.on("error", (error) => {
-        ctx.api.logger.error(`[telegram-voice] Bridge error: ${error.message}`);
+        ctx.api.logger.error(`[telegram-userbot] Bridge error: ${error.message}`);
       });
 
       bridge.on("disconnected", () => {
-        ctx.api.logger.warn("[telegram-voice] Bridge disconnected");
+        ctx.api.logger.warn("[telegram-userbot] Bridge disconnected");
       });
 
       try {
         await bridge.start();
-        ctx.api.logger.info("[telegram-voice] Bridge started successfully!");
+        ctx.api.logger.info("[telegram-userbot] Bridge started successfully!");
       } catch (error) {
-        ctx.api.logger.error(`[telegram-voice] Failed to start bridge: ${error}`);
+        ctx.api.logger.error(`[telegram-userbot] Failed to start bridge: ${error}`);
         throw error;
       }
     },
@@ -318,9 +330,9 @@ const channelPlugin: ChannelPlugin = {
  * Plugin registration
  */
 export default function register(api: PluginApi) {
-  api.logger.info("[telegram-voice] Registering channel plugin...");
+  api.logger.info("[telegram-userbot] Registering channel plugin...");
   api.registerChannel({ plugin: channelPlugin });
-  api.logger.info("[telegram-voice] Channel plugin registered!");
+  api.logger.info("[telegram-userbot] Channel plugin registered!");
 }
 
 export { TelegramBridge } from "./telegram-bridge.js";

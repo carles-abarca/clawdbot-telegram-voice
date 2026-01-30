@@ -1,12 +1,12 @@
 {
-  "name": "@carles-abarca/clawdbot-telegram-voice",
+  "name": "@carles-abarca/clawdbot-telegram-userbot",
   "version": "0.1.0",
   "description": "Telegram voice calls plugin for Clawdbot - 100% local, free stack (Whisper + Piper + Claude)",
   "author": "Carles Abarca <carles@silverbacking.ai>",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/carles-abarca/clawdbot-telegram-voice"
+    "url": "https://github.com/carles-abarca/clawdbot-telegram-userbot"
   },
   "keywords": [
     "clawdbot",
