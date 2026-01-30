@@ -288,7 +288,7 @@ class TelegramVoiceBridge:
             self.emit_event("stream.ended", {"chat_id": chat_id})
                 
     async def run(self):
-        """Main run loop"""
+        """Main run loop - called via app.run() which handles start/stop"""
         # Setup signal handlers
         def signal_handler(sig, frame):
             self.running = False
@@ -298,9 +298,7 @@ class TelegramVoiceBridge:
         signal.signal(signal.SIGTERM, signal_handler)
         
         try:
-            # Message handlers are registered in __init__ via decorator
-            # Start pyrogram (pyrofork)
-            await self.app.start()
+            # app.run() already started the client, so we can use it directly
             me = await self.app.get_me()
             self.emit_event("pyrogram.ready", {
                 "user_id": me.id,
@@ -339,12 +337,8 @@ class TelegramVoiceBridge:
                     await self.pytgcalls.leave_call(self.current_call)
             except:
                 pass
-                
-            try:
-                await self.app.stop()
-            except:
-                pass
-                
+            
+            # Note: app.run() handles app.stop() automatically
             self.emit_event("shutdown", {"status": "complete"})
 
 
@@ -366,7 +360,8 @@ def main():
             pass
     
     bridge = TelegramVoiceBridge(api_id, api_hash, session_path, allowed_users)
-    asyncio.run(bridge.run())
+    # Use app.run() instead of asyncio.run() - this is critical for message handlers!
+    bridge.app.run(bridge.run())
 
 
 if __name__ == "__main__":
