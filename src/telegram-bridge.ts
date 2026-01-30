@@ -51,14 +51,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.handlers import MessageHandler
 from pytgcalls import PyTgCalls
-from pytgcalls.types import MediaStream, AudioQuality
-
-# Try importing stream events (API changed in 2.x)
-try:
-    from pytgcalls.types import StreamEnded, StreamAudioEnded
-except ImportError:
-    StreamEnded = None
-    StreamAudioEnded = None
+from pytgcalls.types import MediaStream, AudioQuality, StreamEnded
 
 
 class TelegramVoiceBridge:
@@ -212,19 +205,12 @@ class TelegramVoiceBridge:
     def setup_handlers(self):
         """Setup pytgcalls event handlers for 2.x API"""
         
-        # Handle stream ended events
-        @self.pytgcalls.on_stream_end()
-        async def on_stream_end(client, update):
+        # Handle stream ended events (pytgcalls 2.x API)
+        @self.pytgcalls.on_update(StreamEnded)
+        async def on_stream_end(client, update: StreamEnded):
             chat_id = getattr(update, 'chat_id', None)
             self.emit_event("stream.ended", {"chat_id": chat_id})
             
-        # Handle when we get kicked from a call
-        @self.pytgcalls.on_kicked()
-        async def on_kicked(client, chat_id):
-            self.emit_event("call.kicked", {"chat_id": chat_id})
-            if self.current_call == chat_id:
-                self.current_call = None
-                
         # Handle incoming private messages (for potential call invites)
         @self.app.on_message(filters.private & filters.incoming)
         async def on_private_message(client: Client, message: Message):
