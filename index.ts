@@ -21,38 +21,33 @@ let piperTTS: PiperTTS | null = null;
 
 /**
  * Get plugin config from Clawdbot config
+ * Config lives at channels["telegram-userbot"] (standard Clawdbot pattern)
  */
 function getPluginConfig(cfg: any): TelegramUserbotConfig | null {
-  // Try plugin config first (from plugins.entries)
-  let channelCfg = cfg.plugins?.entries?.["telegram-userbot"]?.config;
+  // Get config from channels (correct pattern per Clawdbot docs)
+  const channelCfg = cfg.channels?.["telegram-userbot"];
   
-  if (!channelCfg) return null;
+  if (!channelCfg) {
+    return null;
+  }
   
-  const pluginEnabled = cfg.plugins?.entries?.["telegram-userbot"]?.enabled;
-  if (!pluginEnabled) return null;
+  // Check if channel is enabled
+  if (channelCfg.enabled === false) {
+    return null;
+  }
   
   return {
     enabled: true,
     telegram: {
-      apiId: channelCfg.telegram?.apiId,
-      apiHash: channelCfg.telegram?.apiHash,
-      phone: channelCfg.telegram?.phone,
-      sessionPath: channelCfg.telegram?.sessionPath || process.env.HOME + "/jarvis-voice",
-      pythonEnvPath: channelCfg.telegram?.pythonEnvPath || process.env.HOME + "/jarvis-voice-env",
+      apiId: channelCfg.apiId,
+      apiHash: channelCfg.apiHash,
+      phone: channelCfg.phone,
+      sessionPath: channelCfg.sessionPath || process.env.HOME + "/.clawdbot/telegram-userbot/session",
+      pythonEnvPath: channelCfg.pythonEnvPath || process.env.HOME + "/.clawdbot/telegram-userbot/venv",
       allowedUsers: channelCfg.allowedUsers || [],
     },
-    stt: channelCfg.stt || {
-      provider: "whisper-cpp",
-      whisperPath: process.env.HOME + "/whisper.cpp/build/bin/whisper-cli",
-      modelPath: process.env.HOME + "/whisper.cpp/models/ggml-small.bin",
-      language: "auto",
-    },
-    tts: channelCfg.tts || {
-      provider: "piper",
-      piperPath: process.env.HOME + "/piper/piper/piper",
-      voicePath: process.env.HOME + "/piper/voices/ca_ES-upc_pau-x_low.onnx",
-      lengthScale: 0.85,
-    },
+    stt: channelCfg.stt,
+    tts: channelCfg.tts,
   };
 }
 

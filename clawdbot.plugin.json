@@ -3,17 +3,22 @@
   "channels": ["telegram-userbot"],
   "configSchema": {
     "type": "object",
-    "additionalProperties": true,
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "channelConfigSchema": {
+    "type": "object",
+    "additionalProperties": false,
     "properties": {
-      "telegram": {
-        "type": "object",
-        "properties": {
-          "apiId": { "type": "number" },
-          "apiHash": { "type": "string" },
-          "phone": { "type": "string" },
-          "sessionPath": { "type": "string" }
-        },
-        "required": ["apiId", "apiHash", "phone"]
+      "enabled": { "type": "boolean" },
+      "apiId": { "type": "number" },
+      "apiHash": { "type": "string" },
+      "phone": { "type": "string" },
+      "sessionPath": { "type": "string" },
+      "pythonEnvPath": { "type": "string" },
+      "allowedUsers": {
+        "type": "array",
+        "items": { "type": "number" }
       },
       "stt": {
         "type": "object",
@@ -29,20 +34,19 @@
         "properties": {
           "provider": { "type": "string" },
           "piperPath": { "type": "string" },
-          "voicePath": { "type": "string" }
+          "voicePath": { "type": "string" },
+          "lengthScale": { "type": "number" }
         }
-      },
-      "allowedUsers": {
-        "type": "array",
-        "items": { "type": "number" }
       }
-    }
+    },
+    "required": ["apiId", "apiHash", "phone"]
   },
   "uiHints": {
-    "telegram.apiId": { "label": "Telegram API ID", "help": "Get from my.telegram.org" },
-    "telegram.apiHash": { "label": "Telegram API Hash", "sensitive": true },
-    "telegram.phone": { "label": "Phone Number", "placeholder": "+1234567890" },
-    "telegram.sessionPath": { "label": "Session Path" },
+    "apiId": { "label": "Telegram API ID", "help": "Get from my.telegram.org" },
+    "apiHash": { "label": "Telegram API Hash", "sensitive": true },
+    "phone": { "label": "Phone Number", "placeholder": "+1234567890" },
+    "sessionPath": { "label": "Session Path" },
+    "pythonEnvPath": { "label": "Python Env Path" },
     "allowedUsers": { "label": "Allowed User IDs" }
   }
 }
