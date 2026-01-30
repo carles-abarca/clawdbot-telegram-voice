@@ -16,6 +16,7 @@ export interface STTConfig {
   whisperPath?: string;
   modelPath?: string;
   language?: string;
+  threads?: number;
 }
 
 export interface TTSConfig {
@@ -30,6 +31,7 @@ export interface TelegramUserbotConfig {
   telegram: TelegramConfig;
   stt?: STTConfig;
   tts?: TTSConfig;
+  logPath?: string;
 }
 
 // Re-export for backwards compatibility

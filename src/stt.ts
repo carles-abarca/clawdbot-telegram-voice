@@ -31,6 +31,11 @@ export class WhisperSTT {
    */
   async isAvailable(): Promise<boolean> {
     try {
+      if (!this.config.whisperPath || !this.config.modelPath) {
+        this.logger.error("Whisper paths not configured");
+        return false;
+      }
+
       const whisperExists = fs.existsSync(this.config.whisperPath);
       const modelExists = fs.existsSync(this.config.modelPath);
 
@@ -54,18 +59,25 @@ export class WhisperSTT {
    * Transcribe audio file to text
    */
   async transcribe(audioPath: string): Promise<STTResult> {
+    if (!this.config.whisperPath || !this.config.modelPath) {
+      throw new Error("Whisper paths not configured");
+    }
+
     if (!fs.existsSync(audioPath)) {
       throw new Error(`Audio file not found: ${audioPath}`);
     }
 
     // Convert to WAV if needed (Whisper expects 16kHz mono WAV)
     const wavPath = await this.ensureWavFormat(audioPath);
+    const whisperPath = this.config.whisperPath;
+    const modelPath = this.config.modelPath;
+    const threads = this.config.threads ?? 4;
 
     return new Promise((resolve, reject) => {
       const args = [
-        "-m", this.config.modelPath,
+        "-m", modelPath,
         "-f", wavPath,
-        "-t", String(this.config.threads),
+        "-t", String(threads),
         "--no-timestamps",
         "-otxt",
       ];
@@ -75,13 +87,13 @@ export class WhisperSTT {
         args.push("-l", this.config.language);
       }
 
-      this.logger.debug(`Running Whisper: ${this.config.whisperPath} ${args.join(" ")}`);
+      this.logger.debug(`Running Whisper: ${whisperPath} ${args.join(" ")}`);
 
       const startTime = Date.now();
       let stdout = "";
       let stderr = "";
 
-      const proc = spawn(this.config.whisperPath, args);
+      const proc = spawn(whisperPath, args);
 
       proc.stdout.on("data", (data) => {
         stdout += data.toString();

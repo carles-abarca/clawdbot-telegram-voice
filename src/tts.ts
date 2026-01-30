@@ -22,7 +22,7 @@ export class PiperTTS {
     this.tmpDir = path.join(os.tmpdir(), "telegram-voice-tts");
     
     // Piper needs its lib directory in LD_LIBRARY_PATH
-    this.piperLibPath = path.dirname(this.config.piperPath);
+    this.piperLibPath = this.config.piperPath ? path.dirname(this.config.piperPath) : "";
 
     // Ensure tmp directory exists
     if (!fs.existsSync(this.tmpDir)) {
@@ -35,6 +35,11 @@ export class PiperTTS {
    */
   async isAvailable(): Promise<boolean> {
     try {
+      if (!this.config.piperPath || !this.config.voicePath) {
+        this.logger.error("Piper paths not configured");
+        return false;
+      }
+
       const piperExists = fs.existsSync(this.config.piperPath);
       const voiceExists = fs.existsSync(this.config.voicePath);
 
@@ -58,6 +63,9 @@ export class PiperTTS {
    * List available voices
    */
   listVoices(): string[] {
+    if (!this.config.voicePath) {
+      return [];
+    }
     const voicesDir = path.dirname(this.config.voicePath);
     if (!fs.existsSync(voicesDir)) {
       return [];
@@ -73,23 +81,29 @@ export class PiperTTS {
    * Synthesize text to audio file
    */
   async synthesize(text: string, outputPath?: string): Promise<TTSResult> {
+    if (!this.config.piperPath || !this.config.voicePath) {
+      throw new Error("Piper paths not configured");
+    }
+
     if (!text.trim()) {
       throw new Error("Empty text provided for TTS");
     }
 
     const audioPath = outputPath || path.join(this.tmpDir, `tts_${Date.now()}.wav`);
+    const piperPath = this.config.piperPath;
+    const voicePath = this.config.voicePath;
 
     return new Promise((resolve, reject) => {
       const startTime = Date.now();
 
       const args = [
-        "--model", this.config.voicePath,
+        "--model", voicePath,
         "--output_file", audioPath,
       ];
 
       this.logger.debug(`Running Piper: echo "${text.substring(0, 30)}..." | piper ${args.join(" ")}`);
 
-      const proc = spawn(this.config.piperPath, args, {
+      const proc = spawn(piperPath, args, {
         env: {
           ...process.env,
           LD_LIBRARY_PATH: `${this.piperLibPath}:${process.env.LD_LIBRARY_PATH || ""}`,
@@ -98,15 +112,15 @@ export class PiperTTS {
 
       let stderr = "";
 
-      proc.stderr.on("data", (data) => {
+      proc.stderr?.on("data", (data: Buffer) => {
         stderr += data.toString();
       });
 
       // Write text to stdin
-      proc.stdin.write(text);
-      proc.stdin.end();
+      proc.stdin?.write(text);
+      proc.stdin?.end();
 
-      proc.on("close", (code) => {
+      proc.on("close", (code: number | null) => {
         const duration = (Date.now() - startTime) / 1000;
 
         if (code !== 0) {
@@ -138,7 +152,7 @@ export class PiperTTS {
           });
       });
 
-      proc.on("error", (error) => {
+      proc.on("error", (error: Error) => {
         reject(new Error(`Failed to spawn Piper: ${error.message}`));
       });
     });

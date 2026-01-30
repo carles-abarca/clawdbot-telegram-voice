@@ -40,14 +40,14 @@ export function registerTelegramVoiceCli(params: {
             bridgeConnected: rt.bridge.isConnected,
           },
           currentCall: currentCall || null,
-          stt: {
+          stt: config.stt ? {
             provider: config.stt.provider,
             available: await rt.stt.isAvailable(),
-          },
-          tts: {
+          } : { provider: "not configured", available: false },
+          tts: config.tts ? {
             provider: config.tts.provider,
             available: await rt.tts.isAvailable(),
-          },
+          } : { provider: "not configured", available: false },
         }, null, 2));
       } catch (error) {
         // eslint-disable-next-line no-console
@@ -130,8 +130,8 @@ export function registerTelegramVoiceCli(params: {
 
         // eslint-disable-next-line no-console
         console.log(JSON.stringify({
-          provider: config.tts.provider,
-          currentVoice: path.basename(config.tts.voicePath).replace(".onnx", ""),
+          provider: config.tts?.provider ?? "not configured",
+          currentVoice: config.tts?.voicePath ? path.basename(config.tts.voicePath).replace(".onnx", "") : "none",
           availableVoices: voices,
         }, null, 2));
       } catch (error) {
@@ -173,7 +173,8 @@ export function registerTelegramVoiceCli(params: {
     .option("-n, --lines <n>", "Number of lines to show", "50")
     .option("-f, --follow", "Follow log file (tail -f)")
     .action(async (options: { lines: string; follow?: boolean }) => {
-      const logPath = path.join(config.logPath, "calls.jsonl");
+      const logsDir = config.logPath ?? path.join(config.telegram.sessionPath, "..", "logs");
+      const logPath = path.join(logsDir, "calls.jsonl");
 
       if (!fs.existsSync(logPath)) {
         // eslint-disable-next-line no-console
