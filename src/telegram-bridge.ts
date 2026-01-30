@@ -58,6 +58,10 @@ class TelegramVoiceBridge:
     def __init__(self, api_id: int, api_hash: str, session_path: str, allowed_users: list[int] = None):
         self.session_name = Path(session_path).stem
         self.workdir = str(Path(session_path).parent)
+        self.allowed_users = allowed_users or []
+        self.running = True
+        self._shutdown_event = asyncio.Event()
+        self.current_call: Optional[int] = None
         
         self.app = Client(
             self.session_name,
@@ -65,11 +69,13 @@ class TelegramVoiceBridge:
             api_hash=api_hash,
             workdir=self.workdir,
         )
+        
+        # Register message handler with decorator syntax
+        @self.app.on_message(filters.all)
+        async def message_handler(client: Client, message: Message):
+            await self._handle_message(message)
+        
         self.pytgcalls = PyTgCalls(self.app)
-        self.current_call: Optional[int] = None
-        self.allowed_users = allowed_users or []
-        self.running = True
-        self._shutdown_event = asyncio.Event()
         
     def emit_event(self, event: str, data: dict):
         """Send event to Node.js"""
@@ -229,55 +235,49 @@ class TelegramVoiceBridge:
             except Exception as e:
                 self.emit_event("error", {"message": str(e)})
                 
-    def setup_message_handlers(self):
-        """Setup Pyrogram message handlers - MUST be called BEFORE app.start()"""
-        bridge = self  # Capture self for closure
+    async def _handle_message(self, message: Message):
+        """Handle incoming messages"""
+        # Debug: log ALL messages received
+        self.emit_event("debug", {"msg": f"Handler triggered! Chat type: {message.chat.type}, from: {message.from_user.id if message.from_user else 'none'}"})
         
-        async def on_private_message(client: Client, message: Message):
-            # Debug: log ALL messages received
-            bridge.emit_event("debug", {"msg": f"Handler triggered! Chat type: {message.chat.type}, from: {message.from_user.id if message.from_user else 'none'}"})
-            
-            # Filter: only private chats, only incoming (not our own messages)
-            if message.chat.type.value != "private":
-                return
-            if message.outgoing:
-                return
-            
-            user_id = message.from_user.id if message.from_user else None
-            bridge.emit_event("debug", {"msg": f"Private message from user {user_id}"})
-            
-            if not user_id or not bridge.is_user_allowed(user_id):
-                bridge.emit_event("debug", {"msg": f"User {user_id} not allowed"})
-                return
-            
-            # Mark message as read (blue double tick)
-            try:
-                await client.read_chat_history(message.chat.id)
-            except:
-                pass
-            
-            event_data = {
-                "user_id": user_id,
-                "username": message.from_user.username,
-                "text": message.text or "",
-                "message_id": message.id,
-                "voice_path": None,
-                "duration": None,
-            }
-            
-            # Handle voice messages
-            if message.voice:
-                voice_path = f"/tmp/voice_{user_id}_{message.id}.ogg"
-                await message.download(voice_path)
-                event_data["voice_path"] = voice_path
-                event_data["duration"] = message.voice.duration
-                bridge.emit_event("message.voice", event_data)
-            else:
-                bridge.emit_event("message.private", event_data)
+        # Filter: only private chats, only incoming (not our own messages)
+        chat_type = str(message.chat.type).lower()
+        if "private" not in chat_type:
+            return
+        if message.outgoing:
+            return
         
-        # Register handler using add_handler (works before start)
-        # Use filters.all to catch everything, then filter inside the function
-        self.app.add_handler(MessageHandler(on_private_message, filters.all))
+        user_id = message.from_user.id if message.from_user else None
+        self.emit_event("debug", {"msg": f"Private message from user {user_id}"})
+        
+        if not user_id or not self.is_user_allowed(user_id):
+            self.emit_event("debug", {"msg": f"User {user_id} not allowed"})
+            return
+        
+        # Mark message as read (blue double tick)
+        try:
+            await self.app.read_chat_history(message.chat.id)
+        except:
+            pass
+        
+        event_data = {
+            "user_id": user_id,
+            "username": message.from_user.username,
+            "text": message.text or "",
+            "message_id": message.id,
+            "voice_path": None,
+            "duration": None,
+        }
+        
+        # Handle voice messages
+        if message.voice:
+            voice_path = f"/tmp/voice_{user_id}_{message.id}.ogg"
+            await message.download(voice_path)
+            event_data["voice_path"] = voice_path
+            event_data["duration"] = message.voice.duration
+            self.emit_event("message.voice", event_data)
+        else:
+            self.emit_event("message.private", event_data)
                 
     def setup_pytgcalls_handlers(self):
         """Setup pytgcalls event handlers - called after pyrogram starts"""
@@ -298,9 +298,7 @@ class TelegramVoiceBridge:
         signal.signal(signal.SIGTERM, signal_handler)
         
         try:
-            # Setup message handlers BEFORE starting pyrogram
-            self.setup_message_handlers()
-            
+            # Message handlers are registered in __init__ via decorator
             # Start pyrogram (pyrofork)
             await self.app.start()
             me = await self.app.get_me()
