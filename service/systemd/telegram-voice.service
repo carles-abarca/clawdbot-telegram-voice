@@ -1,0 +1,17 @@
+[Unit]
+Description=Telegram Voice Service for Clawdbot
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.clawdbot/telegram-userbot/venv/bin/python %h/.clawdbot/telegram-userbot/telegram-voice-service.py
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+# Límits de recursos
+MemoryMax=1G
+MemoryHigh=800M
+
+[Install]
+WantedBy=default.target

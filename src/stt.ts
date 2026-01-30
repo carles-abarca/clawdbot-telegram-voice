@@ -56,6 +56,64 @@ export class WhisperSTT {
   }
 
   /**
+   * Detect language using a larger model (if configured)
+   */
+  private async detectLanguage(wavPath: string): Promise<string | undefined> {
+    const detectModelPath = this.config.detectModelPath;
+    if (!detectModelPath || !fs.existsSync(detectModelPath)) {
+      return undefined;
+    }
+
+    const whisperPath = this.config.whisperPath!;
+    const threads = this.config.threads ?? 4;
+
+    return new Promise((resolve) => {
+      const args = [
+        "-m", detectModelPath,
+        "-f", wavPath,
+        "-t", String(threads),
+        "--detect-language",  // Only detect language, then exit
+      ];
+
+      this.logger.debug(`Detecting language: ${whisperPath} ${args.join(" ")}`);
+      const startTime = Date.now();
+      let stderr = "";
+
+      const proc = spawn(whisperPath, args);
+
+      proc.stderr.on("data", (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on("close", (code) => {
+        const duration = (Date.now() - startTime) / 1000;
+        
+        if (code !== 0) {
+          this.logger.warn(`Language detection failed, falling back to auto: ${stderr}`);
+          resolve(undefined);
+          return;
+        }
+
+        // Parse detected language from stderr
+        // Format: "whisper_full_with_state: auto-detected language: es (p = 0.95)"
+        const match = stderr.match(/auto-detected language: (\w+)/);
+        if (match) {
+          const lang = match[1];
+          this.logger.info(`Detected language in ${duration.toFixed(2)}s: ${lang}`);
+          resolve(lang);
+        } else {
+          this.logger.warn(`Could not parse detected language from output`);
+          resolve(undefined);
+        }
+      });
+
+      proc.on("error", () => {
+        resolve(undefined);
+      });
+    });
+  }
+
+  /**
    * Transcribe audio file to text
    */
   async transcribe(audioPath: string): Promise<STTResult> {
@@ -73,31 +131,31 @@ export class WhisperSTT {
     const modelPath = this.config.modelPath;
     const threads = this.config.threads ?? 4;
 
+    // If detectModelPath is configured, detect language first with larger model
+    let detectedLang: string | undefined;
+    if (this.config.detectModelPath && this.config.language === "auto") {
+      detectedLang = await this.detectLanguage(wavPath);
+    }
+
     return new Promise((resolve, reject) => {
       const args = [
         "-m", modelPath,
         "-f", wavPath,
         "-t", String(threads),
         "--no-timestamps",
-        "-otxt",
+        "-otxt",  // Output to .txt file
       ];
 
-      // Add language if specified
-      if (this.config.language && this.config.language !== "auto") {
-        args.push("-l", this.config.language);
-      }
+      // Use detected language if available, otherwise use config or auto
+      const lang = detectedLang || this.config.language || "auto";
+      args.push("-l", lang);
 
       this.logger.debug(`Running Whisper: ${whisperPath} ${args.join(" ")}`);
 
       const startTime = Date.now();
-      let stdout = "";
       let stderr = "";
 
       const proc = spawn(whisperPath, args);
-
-      proc.stdout.on("data", (data) => {
-        stdout += data.toString();
-      });
 
       proc.stderr.on("data", (data) => {
         stderr += data.toString();
@@ -105,20 +163,28 @@ export class WhisperSTT {
 
       proc.on("close", (code) => {
         const duration = (Date.now() - startTime) / 1000;
-
-        // Clean up temp WAV if we created it
-        if (wavPath !== audioPath && fs.existsSync(wavPath)) {
-          fs.unlinkSync(wavPath);
-        }
+        const txtPath = wavPath + ".txt";
 
         if (code !== 0) {
           this.logger.error(`Whisper failed with code ${code}: ${stderr}`);
+          // Clean up temp files
+          if (wavPath !== audioPath && fs.existsSync(wavPath)) fs.unlinkSync(wavPath);
+          if (fs.existsSync(txtPath)) fs.unlinkSync(txtPath);
           reject(new Error(`Whisper failed: ${stderr}`));
           return;
         }
 
-        // Parse output - Whisper outputs text directly
-        const text = stdout.trim();
+        // Read output from .txt file (created by -otxt flag)
+        let text = "";
+        if (fs.existsSync(txtPath)) {
+          text = fs.readFileSync(txtPath, "utf-8").trim();
+          fs.unlinkSync(txtPath);  // Clean up
+        }
+        
+        // Clean up temp WAV if we created it
+        if (wavPath !== audioPath && fs.existsSync(wavPath)) {
+          fs.unlinkSync(wavPath);
+        }
 
         // Try to detect language from stderr (Whisper logs it)
         let language: string | undefined;

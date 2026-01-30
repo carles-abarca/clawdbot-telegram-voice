@@ -1,0 +1,8 @@
+# Telegram Voice Service - Python dependencies
+# Base (ja instal·lats pel userbot)
+pyrogram>=2.0.0
+tgcrypto>=1.2.0
+
+# Futures (per trucades)
+# pytgcalls>=3.0.0
+# ntgcalls>=1.0.0

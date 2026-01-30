@@ -7,10 +7,12 @@ Text and voice conversations with your Clawdbot assistant through Telegram userb
 ## ✨ Features
 
 - 💬 **Text messaging** - Chat with your assistant via Telegram
-- 🎤 **Voice notes** - Send/receive voice messages
-- 📞 **Voice calls** - Real-time voice conversations (WIP)
-- 🔊 **Local STT** - Whisper.cpp for speech-to-text (no API costs)
-- 🔈 **Local TTS** - Piper for text-to-speech (no API costs)
+- 🎤 **Voice notes (input)** - Send voice notes, automatically transcribed with faster-whisper
+- 🔊 **Voice notes (output)** - Receive voice responses generated with Piper TTS
+- 🌍 **Auto language detection** - Single-pass detection during transcription
+- 🔄 **Language persistence** - Detected language used for TTS response
+- 🧹 **Markdown stripping** - Clean text for natural TTS output
+- 🏷️ **Audio metadata** - Voice notes show bot name instead of "Unknown Track"
 - 🧠 **Full Clawdbot integration** - Personality, memory, tools
 
 ## ⚠️ Userbot vs Bot
@@ -20,228 +22,417 @@ This plugin uses a **Telegram userbot** (MTProto API), NOT a BotFather bot:
 | BotFather Bot | Userbot (this plugin) |
 |---------------|----------------------|
 | Bot API | MTProto API (Pyrogram) |
-| Cannot make calls | ✅ Can make voice calls |
+| Cannot make calls | Can make voice calls (future) |
 | Limited features | Full user access |
 | grammY/Telegraf | Pyrogram |
+
+## 🎤 Voice-to-Voice Mode
+
+When your voice note starts with the bot's name (default: "Jarvis"), you get a voice response:
+
+```
+You: 🎤 "Jarvis, what's the weather like?"
+Bot: 🔊 [Voice note response in your detected language]
+```
+
+When your voice note doesn't start with the bot name, you get transcription + translation:
+
+```
+You: 🎤 "Estamos trabajando en el proyecto..."
+Bot: 📝 Transcripció: "Estamos trabajando en el proyecto..."
+```
 
 ## 📋 Requirements
 
 - Clawdbot >= 2026.1.0
-- Python 3.10+ with Pyrogram
-- [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) (compiled)
-- [Piper TTS](https://github.com/rhasspy/piper) (with voice models)
+- Python 3.10+ with:
+  - Pyrogram (Telegram MTProto)
+  - faster-whisper (STT)
+- [Piper TTS](https://github.com/rhasspy/piper) binary + voice models
+- ffmpeg with libopus (for OGG conversion)
 - Telegram API credentials from [my.telegram.org](https://my.telegram.org)
 
 ## 🚀 Installation
 
-### Option 1: Link for development
+### 1. Clone and build the plugin
 
 ```bash
-# Clone the repo
-git clone https://github.com/carles-abarca/clawdbot-telegram-userbot
+git clone https://github.com/silverbacking/clawdbot-telegram-userbot
 cd clawdbot-telegram-userbot
 npm install
+npm run build
+```
 
-# Link to Clawdbot
-clawdbot plugins install -l .
-# Or manually:
+### 2. Link to Clawdbot
+
+```bash
+mkdir -p ~/.clawdbot/extensions
 ln -s $(pwd) ~/.clawdbot/extensions/telegram-userbot
-
-# Enable
-clawdbot plugins enable telegram-userbot
 ```
 
-### Option 2: Add to load paths
+### 3. Set up Python environment
 
-Add to `~/.clawdbot/clawdbot.json`:
+```bash
+mkdir -p ~/.clawdbot/telegram-userbot
+python3 -m venv ~/.clawdbot/telegram-userbot/venv
+source ~/.clawdbot/telegram-userbot/venv/bin/activate
 
-```json
-{
-  "plugins": {
-    "load": {
-      "paths": ["/path/to/clawdbot-telegram-userbot"]
-    }
-  }
-}
+# Core dependencies
+pip install pyrogram tgcrypto
+
+# Voice service dependencies
+pip install faster-whisper
 ```
+
+### 4. Install Piper TTS
+
+```bash
+# Download Piper binary
+mkdir -p ~/piper
+cd ~/piper
+wget https://github.com/rhasspy/piper/releases/download/v1.2.0/piper_amd64.tar.gz
+tar -xzf piper_amd64.tar.gz
+
+# Download voice models
+mkdir -p ~/piper/voices
+cd ~/piper/voices
+
+# English
+wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx
+wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json
+
+# Spanish
+wget https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_ES/sharvard/medium/es_ES-sharvard-medium.onnx
+wget https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_ES/sharvard/medium/es_ES-sharvard-medium.onnx.json
+
+# Catalan
+wget https://huggingface.co/rhasspy/piper-voices/resolve/main/ca/ca_ES/upc_pau/x_low/ca_ES-upc_pau-x_low.onnx
+wget https://huggingface.co/rhasspy/piper-voices/resolve/main/ca/ca_ES/upc_pau/x_low/ca_ES-upc_pau-x_low.onnx.json
+```
+
+### 5. Set up the Voice Service
+
+Copy the voice service files to your Clawdbot directory:
+
+```bash
+cp telegram-voice-service.py ~/.clawdbot/telegram-userbot/
+cp telegram-voice-cli.py ~/.clawdbot/telegram-userbot/
+```
+
+Start the voice service:
+
+```bash
+cd ~/.clawdbot/telegram-userbot
+source venv/bin/activate
+python3 telegram-voice-service.py &
+```
+
+Test it:
+
+```bash
+python3 telegram-voice-cli.py status
+```
+
+### 6. Create Telegram session
+
+Get your API credentials from [my.telegram.org](https://my.telegram.org):
+1. Log in with your phone number
+2. Go to "API development tools"
+3. Create a new application
+4. Note your `api_id` and `api_hash`
+
+Create the session:
+
+```bash
+source ~/.clawdbot/telegram-userbot/venv/bin/activate
+python3 << 'EOF'
+from pyrogram import Client
+
+app = Client(
+    "session",
+    api_id=YOUR_API_ID,
+    api_hash="YOUR_API_HASH",
+    workdir="~/.clawdbot/telegram-userbot"
+)
+app.run()
+EOF
+```
+
+Enter your phone number and the verification code when prompted.
 
 ## ⚙️ Configuration
 
-Add to your `clawdbot.json`:
+Add to your `~/.clawdbot/clawdbot.json`:
 
-```json5
+```json
 {
+  "channels": {
+    "telegram-userbot": {
+      "enabled": true,
+      "apiId": 12345678,
+      "apiHash": "your_api_hash_here",
+      "phone": "+1234567890",
+      "sessionPath": "~/.clawdbot/telegram-userbot/session",
+      "pythonEnvPath": "~/.clawdbot/telegram-userbot/venv",
+      "allowedUsers": [123456789],
+      "stt": {
+        "provider": "faster-whisper",
+        "language": "auto"
+      },
+      "tts": {
+        "provider": "piper",
+        "piperPath": "~/piper/piper/piper",
+        "voicePath": "~/piper/voices/en_US-lessac-medium.onnx",
+        "lengthScale": 0.85
+      }
+    }
+  },
   "plugins": {
+    "load": {
+      "paths": ["~/.clawdbot/extensions/telegram-userbot"]
+    },
     "entries": {
       "telegram-userbot": {
-        "enabled": true,
-        "config": {
-          "telegram": {
-            "apiId": 12345678,              // From my.telegram.org
-            "apiHash": "your_api_hash",     // From my.telegram.org
-            "phone": "+1234567890",
-            "sessionPath": "~/.clawdbot/telegram-userbot/session",  // Without .session extension
-            "pythonEnvPath": "~/your-python-venv"  // With pyrogram + pytgcalls
-          },
-          "stt": {
-            "provider": "whisper-cpp",
-            "whisperPath": "~/whisper.cpp/build/bin/whisper-cli",
-            "modelPath": "~/whisper.cpp/models/ggml-small.bin",
-            "language": "auto"
-          },
-          "tts": {
-            "provider": "piper",
-            "piperPath": "~/piper/piper/piper",
-            "voicePath": "~/piper/voices/en_US-lessac-medium.onnx",
-            "lengthScale": 0.85
-          },
-          "allowedUsers": [123456789]  // Your Telegram user ID
-        }
+        "enabled": true
       }
     }
   }
 }
 ```
 
-### Session file
+### Finding your Telegram user ID
 
-The `sessionPath` should point to the Pyrogram session file **without** the `.session` extension:
-- If your session is at `~/.clawdbot/telegram-userbot/session.session`
-- Set `sessionPath` to `~/.clawdbot/telegram-userbot/session`
+The `allowedUsers` array should contain the Telegram user IDs that are allowed to interact with the bot. To find your user ID:
 
-## 🔧 Plugin Structure (for developers)
+```bash
+source ~/.clawdbot/telegram-userbot/venv/bin/activate
+python3 << 'EOF'
+from pyrogram import Client
 
-### Required files for a Clawdbot plugin:
+async def main():
+    app = Client("session", workdir="~/.clawdbot/telegram-userbot")
+    await app.start()
+    me = await app.get_me()
+    print(f"Your user ID: {me.id}")
+    await app.stop()
 
-```
-telegram-userbot/
-├── index.ts              # Entry point (exports plugin object)
-├── clawdbot.plugin.json  # Plugin manifest
-├── package.json          # With clawdbot.extensions field
-├── src/
-│   ├── telegram-bridge.ts
-│   ├── stt.ts
-│   └── tts.ts
-└── dist/                 # Compiled JS (optional if using jiti)
-```
-
-### clawdbot.plugin.json
-
-```json
-{
-  "id": "telegram-userbot",
-  "channels": ["telegram-userbot"],
-  "configSchema": {
-    "type": "object",
-    "additionalProperties": true,
-    "properties": { ... }
-  }
-}
+import asyncio
+asyncio.run(main())
+EOF
 ```
 
-### package.json (critical fields)
+### Path expansion
 
-```json
-{
-  "name": "telegram-userbot",  // Must match plugin id!
-  "clawdbot": {
-    "extensions": ["./index.ts"],
-    "channel": {
-      "id": "telegram-userbot",
-      "label": "Telegram Userbot",
-      ...
-    }
-  }
-}
+All paths support `~` and `$HOME` expansion.
+
+## 🎤 Voice Service
+
+The plugin uses a separate voice service (`telegram-voice-service.py`) that handles:
+
+- **STT (Speech-to-Text)**: faster-whisper with automatic language detection
+- **TTS (Text-to-Speech)**: Piper with multi-language support
+- **Language management**: Per-user language preferences
+
+### Voice Service CLI
+
+Test the voice service with the included CLI:
+
+```bash
+cd ~/.clawdbot/telegram-userbot
+source venv/bin/activate
+
+# Check status
+python3 telegram-voice-cli.py status
+
+# Transcribe audio
+python3 telegram-voice-cli.py transcribe audio.ogg
+
+# Synthesize speech
+python3 telegram-voice-cli.py synthesize "Hello world" --lang en
+
+# Manage user language
+python3 telegram-voice-cli.py language get 123456789
+python3 telegram-voice-cli.py language set 123456789 ca
 ```
 
-### index.ts (export format)
+### Voice Service as systemd service (recommended)
 
-```typescript
-import type { ClawdbotPluginApi } from "clawdbot/plugin-sdk";
+Create `~/.config/systemd/user/telegram-voice-service.service`:
 
-const plugin = {
-  id: "telegram-userbot",           // Must match manifest id
-  name: "Telegram Userbot",
-  description: "...",
-  configSchema: { ... },
-  register(api: ClawdbotPluginApi) {
-    api.registerChannel({ plugin: channelPlugin });
-  },
-};
+```ini
+[Unit]
+Description=Telegram Voice Service
+After=network.target
 
-export default plugin;  // Export object, not function!
+[Service]
+Type=simple
+WorkingDirectory=%h/.clawdbot/telegram-userbot
+Environment="PATH=%h/.clawdbot/telegram-userbot/venv/bin:/usr/bin"
+Environment="LD_LIBRARY_PATH=%h/piper/piper"
+ExecStart=%h/.clawdbot/telegram-userbot/venv/bin/python3 telegram-voice-service.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
 ```
 
-### Key learnings:
+Enable and start:
 
-1. **Plugin ID consistency**: The `id` must match in:
-   - `clawdbot.plugin.json` → `id`
-   - `package.json` → `name` (without scope)
-   - `index.ts` → `plugin.id`
+```bash
+systemctl --user daemon-reload
+systemctl --user enable telegram-voice-service
+systemctl --user start telegram-voice-service
+```
 
-2. **Discovery paths**: Clawdbot finds plugins at:
-   - `~/.clawdbot/extensions/*/index.ts`
-   - `plugins.load.paths` in config
+## 🌍 Supported Languages
 
-3. **Export format**: Must export an object with `{ id, name, register() }`, not a function directly.
+| Language | Code | Whisper | Piper Voice |
+|----------|------|---------|-------------|
+| English | `en` | ✅ | `en_US-lessac-medium` |
+| Spanish | `es` | ✅ | `es_ES-sharvard-medium` |
+| Catalan | `ca` | ✅ | `ca_ES-upc_pau-x_low` |
 
-4. **TypeScript**: Clawdbot uses jiti to load `.ts` files directly.
+Add more languages by:
+1. Downloading a Piper voice model
+2. Adding the language to `SUPPORTED_LANGUAGES` in `telegram-voice-service.py`
+
+## 📊 Performance
+
+Benchmarks on Intel i7-10610U (CPU):
+
+| Operation | Time |
+|-----------|------|
+| STT (5s audio) | ~3.5s |
+| TTS (short sentence) | ~200ms |
+| WAV→OGG conversion | ~85ms |
+| **Total voice-to-voice** | **~4-5s** |
+
+### Optimizations
+
+- **Single-pass STT**: Language detection happens during transcription, not as a separate step
+- **OGG output**: 3x smaller files, faster upload to Telegram
+- **Preloaded models**: Whisper models stay in memory for instant processing
 
 ## 🏗️ Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Telegram App                             │
-│              (Text / Voice / Calls)                         │
+│                     Telegram App                            │
+│               (Text / Voice Notes)                          │
+└─────────────────────────┬───────────────────────────────────┘
+                          │ MTProto
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│           telegram-text-bridge.py (Pyrogram)                │
+│                 JSON-RPC over stdin/stdout                  │
 └─────────────────────────┬───────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                telegram-userbot plugin                      │
+│              telegram-userbot (Node.js plugin)              │
+│  ┌────────────────────┐    ┌─────────────────────────────┐  │
+│  │     Monitor        │    │      Voice Client           │  │
+│  │  (message routing) │    │  (JSON-RPC to voice svc)    │  │
+│  └─────────┬──────────┘    └──────────────┬──────────────┘  │
+│            │                              │                 │
+│            ▼                              ▼                 │
 │  ┌────────────────────────────────────────────────────────┐ │
-│  │     Pyrogram (Python) ←→ Node.js Bridge               │ │
-│  └──────────┬─────────────────────────────┬───────────────┘ │
-│             │                             │                 │
-│             ▼                             ▼                 │
-│  ┌──────────────────┐          ┌──────────────────────┐    │
-│  │  Whisper.cpp     │          │  Piper TTS           │    │
-│  │  (Local STT)     │          │  (Local TTS)         │    │
-│  └────────┬─────────┘          └──────────▲───────────┘    │
-│           │                               │                 │
-│           └───────────────────────────────┘                 │
-│                       │                                     │
-│                       ▼                                     │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │              Clawdbot Core                             │ │
-│  │  - Claude API                                          │ │
-│  │  - Personality, Memory, Tools                          │ │
+│  │            telegram-voice-service.py                   │ │
+│  │  ┌─────────────────┐    ┌─────────────────────────┐    │ │
+│  │  │  faster-whisper │    │      Piper TTS          │    │ │
+│  │  │  (Local STT)    │    │    (Local TTS)          │    │ │
+│  │  │  • small model  │    │  • Multi-language       │    │ │
+│  │  │  • auto-detect  │    │  • OGG output           │    │ │
+│  │  └─────────────────┘    └─────────────────────────┘    │ │
 │  └────────────────────────────────────────────────────────┘ │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    Clawdbot Core                            │
+│            Claude API + Personality + Memory + Tools        │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## 🎤 Voice Models
+## 🔧 Troubleshooting
 
-### Piper TTS
-- 🇬🇧 English: `en_US-lessac-medium`
-- 🇪🇸 Spanish: `es_ES-sharvard-medium`
-- 🏴󠁥󠁳󠁣󠁴󠁿 Catalan: `ca_ES-upc_ona-medium`, `ca_ES-upc_pau-x_low`
-- [Full list](https://rhasspy.github.io/piper-samples/)
+### Voice service not responding
 
-### Whisper.cpp Models
-- `tiny` - Fastest
-- `small` - Recommended ✅
-- `medium` - Better accuracy
-- `large` - Best accuracy
+```bash
+# Check if running
+pgrep -f telegram-voice-service
+
+# Check socket
+ls -la /run/user/$(id -u)/telegram-voice.sock
+
+# Test connection
+python3 telegram-voice-cli.py status
+```
+
+### "Database is locked" error
+
+The Pyrogram session SQLite database is locked by another process:
+
+```bash
+# Kill orphaned bridge processes
+pkill -f telegram-text-bridge.py
+```
+
+### Voice notes not transcribing
+
+1. Check faster-whisper is installed: `pip show faster-whisper`
+2. Check voice service logs
+3. Ensure the audio file exists in the temp directory
+
+### TTS not working
+
+1. Check Piper binary: `~/piper/piper/piper --help`
+2. Check voice model exists: `ls ~/piper/voices/`
+3. Check LD_LIBRARY_PATH includes Piper directory
+
+## 🚀 Setting a Username
+
+To make your userbot easily accessible via `t.me/YourBotName`:
+
+```bash
+source ~/.clawdbot/telegram-userbot/venv/bin/activate
+python3 << 'EOF'
+from pyrogram import Client
+import asyncio
+
+async def set_username():
+    app = Client("session", workdir="~/.clawdbot/telegram-userbot")
+    await app.start()
+    await app.set_username("YourDesiredUsername")
+    me = await app.get_me()
+    print(f"Username set: @{me.username}")
+    await app.stop()
+
+asyncio.run(set_username())
+EOF
+```
+
+## 📱 iPhone Shortcut
+
+Create a quick access shortcut on iOS:
+
+1. Open **Shortcuts** app
+2. Create new shortcut → **Open URLs**
+3. URL: `tg://resolve?domain=YourBotUsername`
+4. Save and add to Home Screen
 
 ## 📊 Status
 
-- ✅ Text messaging
-- ✅ Voice notes (send/receive)
-- ✅ Whisper STT integration
-- ✅ Piper TTS integration
-- ⏳ Voice calls (in progress)
-- ⏳ Full Clawdbot session integration
+- ✅ Text messaging (send/receive)
+- ✅ Voice notes (receive + transcribe)
+- ✅ Voice notes (send with TTS)
+- ✅ Language auto-detection (single-pass)
+- ✅ Language persistence per user
+- ✅ Markdown stripping for TTS
+- ✅ OGG conversion with metadata
+- ✅ Voice-to-voice mode ("Jarvis..." trigger)
+- ⏳ Voice calls (future)
 
 ## 📜 License
 

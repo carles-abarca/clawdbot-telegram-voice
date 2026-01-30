@@ -1,10 +1,10 @@
 /**
- * Telegram Voice Plugin - Python Bridge
+ * Telegram Text Bridge - Lightweight Python Bridge
  * 
- * Communicates with Python process running pytgcalls for Telegram voice calls.
+ * Communicates with Python process running Pyrogram for text messages.
+ * NO pytgcalls - much lighter (~50MB vs ~500MB+)
+ * 
  * Uses JSON-RPC over stdin/stdout for IPC.
- * 
- * Updated 2026-01-29: Compatible with pyrofork + pytgcalls 2.2.x
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -22,17 +22,11 @@ import type {
   Logger,
 } from "./types.js";
 
-// Python bridge script - Updated for pyrofork + pytgcalls 2.2.x
-const BRIDGE_SCRIPT = `
-#!/usr/bin/env python3
+// Lightweight Python bridge script - NO pytgcalls
+const BRIDGE_SCRIPT = `#!/usr/bin/env python3
 """
-Telegram Voice Bridge - Python side
-Handles pytgcalls for Telegram voice calls
-
-Compatible with:
-- pyrofork >= 2.3.x (installs as pyrogram)
-- py-tgcalls >= 2.2.x
-- ntgcalls >= 2.0.x
+Telegram Text Bridge - Lightweight version (NO pytgcalls)
+Only handles text messages via Pyrogram
 """
 
 import asyncio
@@ -40,28 +34,19 @@ import json
 import sys
 import os
 import signal
-import tempfile
-from typing import Optional
 from pathlib import Path
-
-# Add paths for local installations
-sys.path.insert(0, os.path.expanduser("~/jarvis-voice-env/lib/python3.12/site-packages"))
 
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from pyrogram.handlers import MessageHandler
-from pytgcalls import PyTgCalls
-from pytgcalls.types import MediaStream, AudioQuality, StreamEnded
 
 
-class TelegramVoiceBridge:
+class TelegramTextBridge:
     def __init__(self, api_id: int, api_hash: str, session_path: str, allowed_users: list[int] = None):
         self.session_name = Path(session_path).stem
         self.workdir = str(Path(session_path).parent)
         self.allowed_users = allowed_users or []
         self.running = True
         self._shutdown_event = asyncio.Event()
-        self.current_call: Optional[int] = None
         
         self.app = Client(
             self.session_name,
@@ -70,36 +55,24 @@ class TelegramVoiceBridge:
             workdir=self.workdir,
         )
         
-        # Register message handler with decorator syntax
-        @self.app.on_message(filters.all)
+        @self.app.on_message(filters.private & ~filters.me)
         async def message_handler(client: Client, message: Message):
             await self._handle_message(message)
         
-        self.pytgcalls = PyTgCalls(self.app)
-        
     def emit_event(self, event: str, data: dict):
-        """Send event to Node.js"""
         msg = json.dumps({"event": event, "data": data})
         print(f"EVENT:{msg}", flush=True)
         
     def send_response(self, request_id: str, success: bool, data: dict = None, error: str = None):
-        """Send response to Node.js"""
-        response = {
-            "id": request_id,
-            "success": success,
-            "data": data,
-            "error": error
-        }
+        response = {"id": request_id, "success": success, "data": data, "error": error}
         print(f"RESPONSE:{json.dumps(response)}", flush=True)
 
     def is_user_allowed(self, user_id: int) -> bool:
-        """Check if user is in allowlist"""
         if not self.allowed_users:
-            return True  # No allowlist = allow all
+            return True
         return user_id in self.allowed_users
         
     async def handle_request(self, request: dict):
-        """Handle incoming request from Node.js"""
         req_id = request.get("id", "unknown")
         action = request.get("action")
         payload = request.get("payload", {})
@@ -111,68 +84,8 @@ class TelegramVoiceBridge:
                     is_connected = self.app.is_connected
                 except:
                     pass
-                    
-                self.send_response(req_id, True, {
-                    "connected": is_connected,
-                    "current_call": self.current_call,
-                    "pytgcalls_version": "2.2.x"
-                })
+                self.send_response(req_id, True, {"connected": is_connected})
                 
-            elif action == "join":
-                chat_id = payload.get("chat_id")
-                if not chat_id:
-                    self.send_response(req_id, False, error="chat_id required")
-                    return
-                
-                # Check allowlist
-                if not self.is_user_allowed(chat_id):
-                    self.send_response(req_id, False, error="User not in allowlist")
-                    return
-                    
-                try:
-                    # Join with a silent stream initially
-                    # For private calls, we use play() to start streaming
-                    self.current_call = chat_id
-                    self.emit_event("call.joined", {"chat_id": chat_id})
-                    self.send_response(req_id, True, {"chat_id": chat_id})
-                except Exception as e:
-                    self.send_response(req_id, False, error=str(e))
-                
-            elif action == "leave":
-                if self.current_call:
-                    try:
-                        await self.pytgcalls.leave_call(self.current_call)
-                    except Exception as e:
-                        self.emit_event("warning", {"message": f"Error leaving call: {e}"})
-                    
-                    old_call = self.current_call
-                    self.current_call = None
-                    self.emit_event("call.left", {"chat_id": old_call})
-                self.send_response(req_id, True)
-                
-            elif action == "send_audio":
-                audio_path = payload.get("audio_path")
-                if not audio_path or not os.path.exists(audio_path):
-                    self.send_response(req_id, False, error="audio_path required and must exist")
-                    return
-                    
-                if not self.current_call:
-                    self.send_response(req_id, False, error="not in a call")
-                    return
-                    
-                try:
-                    # Stream audio file using pytgcalls 2.x API
-                    await self.pytgcalls.play(
-                        self.current_call,
-                        MediaStream(
-                            audio_path,
-                            audio_parameters=AudioQuality.HIGH,
-                        )
-                    )
-                    self.send_response(req_id, True)
-                except Exception as e:
-                    self.send_response(req_id, False, error=str(e))
-            
             elif action == "send_text":
                 user_id = payload.get("user_id")
                 text = payload.get("text")
@@ -199,6 +112,77 @@ class TelegramVoiceBridge:
                     self.send_response(req_id, True)
                 except Exception as e:
                     self.send_response(req_id, False, error=str(e))
+            
+            elif action == "typing":
+                user_id = payload.get("user_id")
+                typing = payload.get("typing", True)
+                if not user_id:
+                    self.send_response(req_id, False, error="user_id required")
+                    return
+                try:
+                    from pyrogram.enums import ChatAction
+                    if typing:
+                        await self.app.send_chat_action(user_id, ChatAction.TYPING)
+                    else:
+                        await self.app.send_chat_action(user_id, ChatAction.CANCEL)
+                    self.send_response(req_id, True)
+                except Exception as e:
+                    self.send_response(req_id, False, error=str(e))
+                    
+            elif action == "mark_read":
+                chat_id = payload.get("chat_id") or payload.get("user_id")
+                if not chat_id:
+                    self.send_response(req_id, False, error="chat_id or user_id required")
+                    return
+                try:
+                    await self.app.read_chat_history(chat_id)
+                    self.send_response(req_id, True)
+                except Exception as e:
+                    self.send_response(req_id, False, error=str(e))
+            
+            elif action == "chat_action":
+                # Show any chat action status
+                user_id = payload.get("user_id")
+                action_type = payload.get("action_type", "typing")  # typing, upload_audio, record_audio, cancel
+                if not user_id:
+                    self.send_response(req_id, False, error="user_id required")
+                    return
+                try:
+                    from pyrogram.enums import ChatAction
+                    action_map = {
+                        "typing": ChatAction.TYPING,
+                        "upload_audio": ChatAction.UPLOAD_AUDIO,
+                        "record_audio": ChatAction.RECORD_AUDIO,
+                        "upload_video": ChatAction.UPLOAD_VIDEO,
+                        "record_video": ChatAction.RECORD_VIDEO,
+                        "upload_photo": ChatAction.UPLOAD_PHOTO,
+                        "upload_document": ChatAction.UPLOAD_DOCUMENT,
+                        "playing": ChatAction.PLAYING,
+                        "choose_sticker": ChatAction.CHOOSE_STICKER,
+                        "cancel": ChatAction.CANCEL,
+                    }
+                    chat_action = action_map.get(action_type, ChatAction.TYPING)
+                    await self.app.send_chat_action(user_id, chat_action)
+                    self.send_response(req_id, True)
+                except Exception as e:
+                    self.send_response(req_id, False, error=str(e))
+            
+            elif action == "record_audio":
+                # Legacy: Show "recording voice" status
+                user_id = payload.get("user_id")
+                recording = payload.get("recording", True)
+                if not user_id:
+                    self.send_response(req_id, False, error="user_id required")
+                    return
+                try:
+                    from pyrogram.enums import ChatAction
+                    if recording:
+                        await self.app.send_chat_action(user_id, ChatAction.RECORD_AUDIO)
+                    else:
+                        await self.app.send_chat_action(user_id, ChatAction.CANCEL)
+                    self.send_response(req_id, True)
+                except Exception as e:
+                    self.send_response(req_id, False, error=str(e))
                     
             elif action == "shutdown":
                 self.running = False
@@ -212,7 +196,6 @@ class TelegramVoiceBridge:
             self.send_response(req_id, False, error=str(e))
             
     async def stdin_reader(self):
-        """Read requests from Node.js via stdin"""
         loop = asyncio.get_event_loop()
         reader = asyncio.StreamReader()
         protocol = asyncio.StreamReaderProtocol(reader)
@@ -223,7 +206,6 @@ class TelegramVoiceBridge:
                 line = await asyncio.wait_for(reader.readline(), timeout=1.0)
                 if not line:
                     continue
-                    
                 line = line.decode().strip()
                 if line.startswith("REQUEST:"):
                     request = json.loads(line[8:])
@@ -236,35 +218,22 @@ class TelegramVoiceBridge:
                 self.emit_event("error", {"message": str(e)})
                 
     async def _handle_message(self, message: Message):
-        """Handle incoming messages"""
-        # Debug: log ALL messages received
-        self.emit_event("debug", {"msg": f"Handler triggered! Chat type: {message.chat.type}, from: {message.from_user.id if message.from_user else 'none'}"})
-        
-        # Filter: only private chats, only incoming (not our own messages)
-        chat_type = str(message.chat.type).lower()
-        if "private" not in chat_type:
-            return
-        if message.outgoing:
-            return
-        
         user_id = message.from_user.id if message.from_user else None
-        self.emit_event("debug", {"msg": f"Private message from user {user_id}"})
         
         if not user_id or not self.is_user_allowed(user_id):
-            self.emit_event("debug", {"msg": f"User {user_id} not allowed"})
             return
         
-        # Mark message as read (blue double tick)
-        try:
-            await self.app.read_chat_history(message.chat.id)
-        except:
-            pass
+        # Don't mark as read here - let the caller decide when to mark as read
+        # (e.g., after transcription is complete for voice messages)
         
         event_data = {
             "user_id": user_id,
             "username": message.from_user.username,
-            "text": message.text or "",
+            "first_name": message.from_user.first_name,
+            "text": message.text or message.caption or "",
             "message_id": message.id,
+            "media_path": None,
+            "media_type": None,
             "voice_path": None,
             "duration": None,
         }
@@ -276,20 +245,55 @@ class TelegramVoiceBridge:
             event_data["voice_path"] = voice_path
             event_data["duration"] = message.voice.duration
             self.emit_event("message.voice", event_data)
+        # Handle photos
+        elif message.photo:
+            photo_path = f"/tmp/photo_{user_id}_{message.id}.jpg"
+            await message.download(photo_path)
+            event_data["media_path"] = photo_path
+            event_data["media_type"] = "photo"
+            self.emit_event("message.media", event_data)
+        # Handle documents
+        elif message.document:
+            doc = message.document
+            ext = doc.file_name.split(".")[-1] if doc.file_name and "." in doc.file_name else "bin"
+            doc_path = f"/tmp/doc_{user_id}_{message.id}.{ext}"
+            await message.download(doc_path)
+            event_data["media_path"] = doc_path
+            event_data["media_type"] = "document"
+            event_data["file_name"] = doc.file_name
+            event_data["mime_type"] = doc.mime_type
+            self.emit_event("message.media", event_data)
+        # Handle videos
+        elif message.video:
+            video_path = f"/tmp/video_{user_id}_{message.id}.mp4"
+            await message.download(video_path)
+            event_data["media_path"] = video_path
+            event_data["media_type"] = "video"
+            event_data["duration"] = message.video.duration
+            self.emit_event("message.media", event_data)
+        # Handle stickers
+        elif message.sticker:
+            sticker = message.sticker
+            ext = "webp" if not sticker.is_animated else "tgs"
+            sticker_path = f"/tmp/sticker_{user_id}_{message.id}.{ext}"
+            await message.download(sticker_path)
+            event_data["media_path"] = sticker_path
+            event_data["media_type"] = "sticker"
+            event_data["emoji"] = sticker.emoji
+            self.emit_event("message.media", event_data)
+        # Handle audio files
+        elif message.audio:
+            audio_path = f"/tmp/audio_{user_id}_{message.id}.mp3"
+            await message.download(audio_path)
+            event_data["media_path"] = audio_path
+            event_data["media_type"] = "audio"
+            event_data["duration"] = message.audio.duration
+            self.emit_event("message.media", event_data)
+        # Plain text
         else:
             self.emit_event("message.private", event_data)
                 
-    def setup_pytgcalls_handlers(self):
-        """Setup pytgcalls event handlers - called after pyrogram starts"""
-        
-        @self.pytgcalls.on_update(StreamEnded)
-        async def on_stream_end(client, update: StreamEnded):
-            chat_id = getattr(update, 'chat_id', None)
-            self.emit_event("stream.ended", {"chat_id": chat_id})
-                
     async def run(self):
-        """Main run loop - called via app.run() which handles start/stop"""
-        # Setup signal handlers
         def signal_handler(sig, frame):
             self.running = False
             self._shutdown_event.set()
@@ -298,30 +302,15 @@ class TelegramVoiceBridge:
         signal.signal(signal.SIGTERM, signal_handler)
         
         try:
-            # Start the client (app.run() doesn't auto-start in pyrofork)
             await self.app.start()
             me = await self.app.get_me()
-            self.emit_event("pyrogram.ready", {
-                "user_id": me.id,
-                "username": me.username,
-                "name": me.first_name
-            })
+            self.emit_event("ready", {"user_id": me.id, "username": me.username, "name": me.first_name})
             
-            # Setup pytgcalls handlers (after pyrogram starts)
-            self.setup_pytgcalls_handlers()
-            
-            # Start pytgcalls
-            await self.pytgcalls.start()
-            self.emit_event("ready", {"status": "connected", "pytgcalls": "2.2.x"})
-            
-            # Start stdin reader as a task
             reader_task = asyncio.create_task(self.stdin_reader())
             
-            # Main loop - yield to event loop regularly to process Pyrogram updates
             while self.running and not self._shutdown_event.is_set():
-                await asyncio.sleep(0.1)  # Yield to event loop
+                await asyncio.sleep(0.1)
             
-            # Cancel stdin reader
             reader_task.cancel()
             try:
                 await reader_task
@@ -332,13 +321,6 @@ class TelegramVoiceBridge:
             self.emit_event("error", {"message": str(e), "fatal": True})
             raise
         finally:
-            # Cleanup
-            try:
-                if self.current_call:
-                    await self.pytgcalls.leave_call(self.current_call)
-            except:
-                pass
-            
             try:
                 await self.app.stop()
             except:
@@ -355,7 +337,6 @@ def main():
     api_hash = sys.argv[2]
     session_path = sys.argv[3]
     
-    # Parse allowed users if provided
     allowed_users = []
     if len(sys.argv) > 4:
         try:
@@ -363,8 +344,7 @@ def main():
         except:
             pass
     
-    bridge = TelegramVoiceBridge(api_id, api_hash, session_path, allowed_users)
-    # Use app.run() instead of asyncio.run() - this is critical for message handlers!
+    bridge = TelegramTextBridge(api_id, api_hash, session_path, allowed_users)
     bridge.app.run(bridge.run())
 
 
@@ -389,7 +369,7 @@ export class TelegramBridge extends EventEmitter {
     super();
     this.config = config;
     this.logger = logger;
-    this.bridgeScriptPath = path.join(os.tmpdir(), "telegram-voice-bridge.py");
+    this.bridgeScriptPath = path.join(os.tmpdir(), "telegram-text-bridge.py");
   }
 
   get isConnected(): boolean {
@@ -397,13 +377,56 @@ export class TelegramBridge extends EventEmitter {
   }
 
   /**
-   * Start the Python bridge process
+   * Kill any orphaned bridge processes from previous runs.
+   * This prevents duplicate processes after gateway restarts.
    */
+  private async killOrphanedProcesses(): Promise<void> {
+    const { execSync } = await import("node:child_process");
+    
+    try {
+      // Find and kill any existing telegram-text-bridge.py processes
+      const result = execSync(
+        `pgrep -f "telegram-text-bridge.py.*${this.config.sessionPath}" 2>/dev/null || true`,
+        { encoding: "utf-8" }
+      ).trim();
+      
+      if (result) {
+        const pids = result.split("\n").filter(Boolean);
+        this.logger.warn(`Found ${pids.length} orphaned bridge process(es), killing: ${pids.join(", ")}`);
+        
+        for (const pid of pids) {
+          try {
+            execSync(`kill -TERM ${pid} 2>/dev/null || true`);
+          } catch {
+            // Process may have already exited
+          }
+        }
+        
+        // Wait a moment for processes to terminate
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        
+        // Force kill any remaining
+        for (const pid of pids) {
+          try {
+            execSync(`kill -KILL ${pid} 2>/dev/null || true`);
+          } catch {
+            // Process may have already exited
+          }
+        }
+      }
+    } catch (error) {
+      this.logger.debug(`Orphan cleanup check: ${error}`);
+    }
+  }
+
   async start(): Promise<void> {
     if (this.process) {
       this.logger.warn("Bridge already running");
       return;
     }
+
+    // Kill any orphaned bridge processes from previous runs
+    await this.killOrphanedProcesses();
 
     // Write bridge script
     fs.writeFileSync(this.bridgeScriptPath, BRIDGE_SCRIPT, { mode: 0o755 });
@@ -415,10 +438,9 @@ export class TelegramBridge extends EventEmitter {
       throw new Error(`Python not found at: ${pythonPath}`);
     }
 
-    // Build allowed users arg
     const allowedUsersArg = this.config.allowedUsers?.join(",") || "";
 
-    this.logger.info(`Starting Telegram bridge with Python: ${pythonPath}`);
+    this.logger.info(`Starting Telegram text bridge with Python: ${pythonPath}`);
 
     this.process = spawn(pythonPath, [
       this.bridgeScriptPath,
@@ -434,7 +456,6 @@ export class TelegramBridge extends EventEmitter {
       },
     });
 
-    // Setup readline for stdout
     const rl = readline.createInterface({
       input: this.process.stdout!,
       crlfDelay: Infinity,
@@ -442,11 +463,9 @@ export class TelegramBridge extends EventEmitter {
 
     rl.on("line", (line) => this.handleOutput(line));
 
-    // Log stderr
     this.process.stderr?.on("data", (data) => {
       const msg = data.toString().trim();
-      // Filter out pytgcalls banner
-      if (!msg.includes("PyTgCalls v") && !msg.includes("Licensed under")) {
+      if (msg) {
         this.logger.error(`Bridge stderr: ${msg}`);
       }
     });
@@ -482,39 +501,31 @@ export class TelegramBridge extends EventEmitter {
       });
     });
 
-    this.logger.info("Telegram bridge connected successfully");
+    this.logger.info("Telegram text bridge connected successfully");
   }
 
-  /**
-   * Stop the bridge process
-   */
   async stop(): Promise<void> {
     if (!this.process) return;
 
     this.logger.info("Stopping Telegram bridge...");
 
-    // Clear pending requests
     for (const [_id, pending] of this.pendingRequests) {
       clearTimeout(pending.timeout);
       pending.reject(new Error("Bridge stopping"));
     }
     this.pendingRequests.clear();
 
-    // Send shutdown request
     try {
       await this.request("shutdown", {});
     } catch {
       // Ignore errors during shutdown
     }
 
-    // Wait a bit for graceful shutdown
     await new Promise((resolve) => setTimeout(resolve, 1000));
 
-    // Kill process if still running
     if (this.process) {
       this.process.kill("SIGTERM");
 
-      // Wait for exit with timeout
       await new Promise<void>((resolve) => {
         const timeout = setTimeout(() => {
           this.process?.kill("SIGKILL");
@@ -531,7 +542,6 @@ export class TelegramBridge extends EventEmitter {
     this.process = null;
     this._isConnected = false;
 
-    // Cleanup script
     if (fs.existsSync(this.bridgeScriptPath)) {
       try {
         fs.unlinkSync(this.bridgeScriptPath);
@@ -543,9 +553,6 @@ export class TelegramBridge extends EventEmitter {
     this.logger.info("Telegram bridge stopped");
   }
 
-  /**
-   * Send request to Python bridge
-   */
   async request(action: string, payload?: Record<string, unknown>): Promise<BridgeResponse> {
     if (!this.process) {
       throw new Error("Bridge not running");
@@ -571,16 +578,7 @@ export class TelegramBridge extends EventEmitter {
     });
   }
 
-  /**
-   * Handle output from Python bridge
-   */
   private handleOutput(line: string): void {
-    // Filter pytgcalls banner from stdout too
-    if (line.includes("PyTgCalls v") || line.includes("Licensed under") || line.includes("Copyright")) {
-      this.logger.debug(`Bridge: ${line}`);
-      return;
-    }
-
     if (line.startsWith("RESPONSE:")) {
       try {
         const response: BridgeResponse = JSON.parse(line.substring(9));
@@ -605,34 +603,14 @@ export class TelegramBridge extends EventEmitter {
     }
   }
 
-  /**
-   * Handle event from Python bridge
-   */
   private handleEvent(event: BridgeEvent): void {
     this.logger.debug(`Bridge event: ${event.event} ${JSON.stringify(event.data)}`);
 
     switch (event.event) {
       case "ready":
-        this.emit("ready");
-        break;
-      case "pyrogram.ready":
         this.logger.info(`Telegram connected as: ${event.data.name} (@${event.data.username})`);
+        this.emit("ready");
         this.emit("telegram:ready", event.data);
-        break;
-      case "call.joined":
-        this.emit("call:joined", event.data);
-        break;
-      case "call.left":
-        this.emit("call:left", event.data);
-        break;
-      case "call.kicked":
-        this.emit("call:kicked", event.data);
-        break;
-      case "stream.ended":
-        this.emit("stream:ended", event.data);
-        break;
-      case "audio.received":
-        this.emit("audio:received", event.data);
         break;
       case "message.private":
         this.emit("message:private", event.data);
@@ -640,8 +618,8 @@ export class TelegramBridge extends EventEmitter {
       case "message.voice":
         this.emit("message:voice", event.data);
         break;
-      case "warning":
-        this.logger.warn(`Bridge warning: ${event.data.message}`);
+      case "message.media":
+        this.emit("message:media", event.data);
         break;
       case "shutdown":
         this.logger.info("Bridge shutdown complete");
@@ -657,34 +635,10 @@ export class TelegramBridge extends EventEmitter {
     }
   }
 
-  // Convenience methods
-
-  async getStatus(): Promise<{ connected: boolean; currentCall: number | null }> {
+  async getStatus(): Promise<{ connected: boolean }> {
     const response = await this.request("status");
     return {
       connected: response.data?.connected as boolean || false,
-      currentCall: response.data?.current_call as number | null || null,
     };
-  }
-
-  async joinCall(chatId: number): Promise<void> {
-    const response = await this.request("join", { chat_id: chatId });
-    if (!response.success) {
-      throw new Error(response.error || "Failed to join call");
-    }
-  }
-
-  async leaveCall(): Promise<void> {
-    const response = await this.request("leave");
-    if (!response.success) {
-      throw new Error(response.error || "Failed to leave call");
-    }
-  }
-
-  async sendAudio(audioPath: string): Promise<void> {
-    const response = await this.request("send_audio", { audio_path: audioPath });
-    if (!response.success) {
-      throw new Error(response.error || "Failed to send audio");
-    }
   }
 }

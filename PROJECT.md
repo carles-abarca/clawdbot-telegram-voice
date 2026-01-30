@@ -2,14 +2,13 @@
 
 ## 📋 Status: Active Development
 
-**Last Updated:** 2026-01-29 23:40
+**Last Updated:** 2026-01-30 12:14
 
 ## 🎯 Vision
 
 Un **userbot de Telegram** (usuari normal, NO bot de BotFather) que permeti:
 - 💬 Escriure missatges de text
-- 🎤 Enviar/rebre notes de veu
-- 📞 Fer trucades de veu en temps real (WIP)
+- 🎤 Enviar/rebre notes de veu amb transcripció i resposta per veu
 - 🧠 Tot integrat amb Clawdbot (personalitat, memòria, eines)
 
 ## ✅ Fites Aconseguides
@@ -18,233 +17,223 @@ Un **userbot de Telegram** (usuari normal, NO bot de BotFather) que permeti:
 - [x] Plugin detectat per `clawdbot plugins list`
 - [x] Plugin s'habilita amb `clawdbot plugins enable telegram-userbot`
 - [x] Documentació del format correcte de plugin
+- [x] Consistència d'IDs (package.json name sense prefix `clawdbot-`)
 
-### Text
+### Text (2026-01-29)
 - [x] Userbot Pyrogram funcionant
 - [x] Rebre missatges de text de l'usuari
 - [x] Enviar respostes de text
-- [x] Servei systemd (`jarvis-telegram`)
+- [x] Bridge Python-Node.js via JSON-RPC stdin/stdout
 
-### Veu (Sortida)
+### Veu - STT (2026-01-30)
+- [x] Whisper.cpp instal·lat i funcionant
+- [x] Transcripció de notes de veu entrants
+- [x] **Detecció d'idioma amb model `medium`** (més precís)
+- [x] **Transcripció amb model `small`** (més ràpid)
+- [x] Flag `-l auto` explícit (per defecte Whisper assumeix anglès!)
+- [x] Lectura correcta del fitxer `.txt` generat per `-otxt`
+
+### Veu - TTS (2026-01-30)
 - [x] Piper TTS instal·lat amb veu catalana
 - [x] Generar àudio des de text
+- [x] Enviar notes de veu com a resposta
 
-### Veu (Entrada) 
-- [x] Whisper.cpp instal·lat i funcionant
-- [ ] Integració amb voice notes de Telegram
+### UX Notes de Veu (2026-01-30)
+- [x] **Estat "Sending a file"** mentre transcriu (~13s)
+- [x] **Marcar com a llegit** després de transcripció
+- [x] **Estat "Recording voice"** o **"Typing"** segons tipus de resposta
+- [x] Refresh d'estats cada 4s (Telegram expira als 5s)
 
-## 📚 Lliçons Apreses: Crear un Plugin Clawdbot
+### Voice-to-Voice Mode (2026-01-30)
+- [x] **Activació:** Nota de veu que comença amb "Jarvis" (configurable via `BOT_NAME`)
+- [x] **Resposta:** Nota de veu generada amb Piper TTS
+- [x] **Fallback:** Si TTS falla, respon amb text
 
-### 1. Estructura de Fitxers
+### Transcripció + Traducció (2026-01-30)
+- [x] Notes de veu **sense "Jarvis"** demanen a Claude:
+  - Transcripció original
+  - Traducció a la llengua de la conversa
+
+### Robustesa (2026-01-30)
+- [x] **Cleanup de processos orfes** al iniciar el bridge
+- [x] **Expansió de paths** amb `~` i `$HOME` a la config
+
+## 📚 Arquitectura de Veu
+
+### Flux de Notes de Veu Entrants
 
 ```
-telegram-userbot/
-├── index.ts              # Entry point OBLIGATORI a l'arrel
-├── clawdbot.plugin.json  # Manifest del plugin
-├── package.json          # Amb camp clawdbot.extensions
-├── src/                  # Codi font
-│   ├── telegram-bridge.ts
-│   ├── stt.ts
-│   └── tts.ts
-└── dist/                 # Compilat (opcional amb jiti)
+┌─────────────────────────────────────────────────────────────┐
+│                    Nota de Veu Rebuda                       │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│  1. Estat: "Sending a file" (refresh cada 4s)              │
+│  2. Detecció idioma amb Whisper medium (~5s)                │
+│  3. Transcripció amb Whisper small + idioma forçat (~8s)    │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│  4. Marcar com a llegit ✓✓                                  │
+│  5. Comprovar si comença amb "Jarvis"                       │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+            ┌─────────────┴─────────────┐
+            │                           │
+            ▼                           ▼
+┌───────────────────────┐   ┌───────────────────────┐
+│ Comença amb "Jarvis"  │   │ NO comença amb Jarvis │
+│                       │   │                       │
+│ • Estat: Record audio │   │ • Estat: Typing       │
+│ • Processar amb Claude│   │ • Demanar transcripció│
+│ • Generar TTS (Piper) │   │   + traducció a Claude│
+│ • Enviar nota de veu  │   │ • Enviar text         │
+└───────────────────────┘   └───────────────────────┘
 ```
 
-### 2. Consistència d'IDs (CRÍTIC!)
-
-L'ID del plugin ha de coincidir a **TRES llocs**:
-
-| Fitxer | Camp | Valor |
-|--------|------|-------|
-| `clawdbot.plugin.json` | `id` | `telegram-userbot` |
-| `package.json` | `name` | `telegram-userbot` |
-| `index.ts` | `plugin.id` | `telegram-userbot` |
-
-⚠️ Si el `package.json` name té scope (ex: `@scope/nom`), Clawdbot extreu el nom sense scope i compara. Millor NO usar scope.
-
-### 3. Format del clawdbot.plugin.json
+### Configuració STT (Whisper.cpp)
 
 ```json
-{
-  "id": "telegram-userbot",
-  "channels": ["telegram-userbot"],
-  "configSchema": {
-    "type": "object",
-    "additionalProperties": true,
-    "properties": { ... }
-  },
-  "uiHints": { ... }
+"stt": {
+  "provider": "whisper-cpp",
+  "whisperPath": "~/whisper.cpp/build/bin/whisper-cli",
+  "modelPath": "~/whisper.cpp/models/ggml-small.bin",
+  "detectModelPath": "~/whisper.cpp/models/ggml-medium.bin",
+  "language": "auto",
+  "threads": 4
 }
 ```
 
-### 4. Format del package.json
+**Models:**
+| Model | Mida | Ús | Temps (~10s àudio) |
+|-------|------|-----|-------------------|
+| small | 466MB | Transcripció | ~8s |
+| medium | 1.5GB | Detecció idioma | ~5s |
+
+**Flags importants:**
+- `-l auto` - OBLIGATORI per auto-detect (per defecte és `en`!)
+- `-otxt` - Output a fitxer `.txt`
+- `--no-timestamps` - Sense timestamps
+
+### Configuració TTS (Piper)
+
+```json
+"tts": {
+  "provider": "piper",
+  "piperPath": "~/piper/piper/piper",
+  "voicePath": "~/piper/voices/ca_ES-upc_pau-x_low.onnx",
+  "lengthScale": 0.85
+}
+```
+
+**Veus disponibles:**
+- `ca_ES-upc_pau-x_low.onnx` - Català (Pau, masculí) ✅
+- `ca_ES-upc_ona-medium.onnx` - Català (Ona, femení)
+- `es_ES-sharvard-medium.onnx` - Castellà
+- `en_US-lessac-medium.onnx` - Anglès
+
+## 🔧 Configuració Completa
 
 ```json
 {
-  "name": "telegram-userbot",
-  "type": "module",
-  "clawdbot": {
-    "extensions": ["./index.ts"],
-    "channel": {
-      "id": "telegram-userbot",
-      "label": "Telegram Userbot",
-      "selectionLabel": "Telegram Userbot (Text + Voice)",
-      "docsPath": "/channels/telegram-userbot",
-      "blurb": "Description"
+  "channels": {
+    "telegram-userbot": {
+      "enabled": true,
+      "apiId": 37255096,
+      "apiHash": "...",
+      "phone": "+525548038542",
+      "sessionPath": "~/.clawdbot/telegram-userbot/session",
+      "pythonEnvPath": "~/.clawdbot/telegram-userbot/venv",
+      "allowedUsers": [32975149],
+      "stt": {
+        "provider": "whisper-cpp",
+        "whisperPath": "~/whisper.cpp/build/bin/whisper-cli",
+        "modelPath": "~/whisper.cpp/models/ggml-small.bin",
+        "detectModelPath": "~/whisper.cpp/models/ggml-medium.bin",
+        "language": "auto",
+        "threads": 4
+      },
+      "tts": {
+        "provider": "piper",
+        "piperPath": "~/piper/piper/piper",
+        "voicePath": "~/piper/voices/ca_ES-upc_pau-x_low.onnx",
+        "lengthScale": 0.85
+      }
     }
   }
 }
 ```
-
-### 5. Format del index.ts (CRÍTIC!)
-
-```typescript
-import type { ClawdbotPluginApi } from "clawdbot/plugin-sdk";
-
-// Definir el channel plugin
-const channelPlugin = {
-  id: "telegram-userbot",
-  meta: { ... },
-  capabilities: { ... },
-  gateway: {
-    start: async (ctx) => { ... },
-    stop: async () => { ... },
-  },
-  outbound: {
-    deliveryMode: "direct",
-    sendText: async (opts) => { ... },
-  },
-};
-
-// OBLIGATORI: Exportar objecte amb id, name, register
-const plugin = {
-  id: "telegram-userbot",
-  name: "Telegram Userbot",
-  description: "...",
-  configSchema: { ... },
-  register(api: ClawdbotPluginApi) {
-    api.registerChannel({ plugin: channelPlugin });
-  },
-};
-
-export default plugin;
-```
-
-⚠️ **NO exportar una funció directament!** Ha de ser un objecte amb `register()`.
-
-### 6. On Posar el Plugin
-
-Clawdbot cerca plugins a:
-
-1. `plugins.load.paths` (config explícita)
-2. `~/.clawdbot/extensions/*.ts`
-3. `~/.clawdbot/extensions/*/index.ts`
-
-**Mètode recomanat per desenvolupament:**
-```bash
-ln -s /path/to/plugin ~/.clawdbot/extensions/telegram-userbot
-```
-
-O afegir a config:
-```json
-{
-  "plugins": {
-    "load": {
-      "paths": ["/path/to/plugin"]
-    }
-  }
-}
-```
-
-### 7. Comandes CLI
-
-```bash
-# Llistar plugins
-clawdbot plugins list
-
-# Info d'un plugin
-clawdbot plugins info <id>
-
-# Instal·lar (link per dev)
-clawdbot plugins install -l /path/to/plugin
-
-# Habilitar
-clawdbot plugins enable <id>
-
-# Deshabilitar
-clawdbot plugins disable <id>
-```
-
-## 🚧 Problemes Identificats
-
-### py-tgcalls limitació per trucades P2P
-La llibreria `py-tgcalls` no suporta captura d'àudio en trucades privades P2P.
-
-**Alternatives:**
-- `pytgvoip` (libtgvoip) - Requereix compilació
-- Notes de veu en lloc de trucades en temps real
 
 ## 📁 Estructura de Fitxers
 
 ```
-# Plugin source (development)
-~/jarvis/dev/repos/clawdbot-telegram-userbot/
-├── index.ts              # Entry point
-├── clawdbot.plugin.json  # Manifest
-├── package.json          # Amb clawdbot.extensions
-└── src/                  # Codi font
-
-# Clawdbot integration
-~/.clawdbot/
-├── extensions/
-│   └── telegram-userbot -> ~/jarvis/dev/repos/...  # Symlink
-├── telegram-userbot/
-│   └── session.session   # Sessió Pyrogram
-└── clawdbot.json         # Config
-
-# Python environment (extern al plugin)
-~/jarvis-voice-env/       # Python venv amb pyrogram + pytgcalls
-~/piper/                  # Piper TTS binari + veus
-~/whisper.cpp/            # Whisper STT binari + models
+~/.clawdbot/extensions/telegram-userbot/
+├── index.ts                    # Entry point
+├── clawdbot.plugin.json        # Manifest
+├── package.json                # @silverbacking/telegram-userbot
+├── PROJECT.md                  # Aquesta documentació
+├── README.md                   # Documentació pública
+├── src/
+│   ├── channel.ts              # Channel plugin definition
+│   ├── config.ts               # Config types + expandPath()
+│   ├── monitor.ts              # Inbound message handler
+│   ├── runtime.ts              # Runtime access
+│   ├── stt.ts                  # WhisperSTT class
+│   ├── telegram-bridge.ts      # Python bridge + embedded script
+│   ├── tts.ts                  # PiperTTS class
+│   └── types.ts                # TypeScript types
+└── dist/                       # Compiled JS
 ```
 
-## 🔧 Configuració Actual
+## 🐛 Bugs Resolts
 
-### Telegram Userbot
-- **API ID:** 37255096 (de my.telegram.org)
-- **Session:** `~/.clawdbot/telegram-userbot/session.session`
-- **Python venv:** `~/jarvis-voice-env/`
+### 1. Whisper assumeix anglès per defecte
+**Problema:** Sense `-l`, Whisper usa `lang=en` i "tradueix" a anglès.
+**Solució:** Passar `-l auto` explícitament.
 
-### Usuari Autoritzat
-- **Carles ID:** 32975149
+### 2. Lectura de stdout en lloc de fitxer
+**Problema:** El codi llegia `stdout` però Whisper escriu a `.txt` amb `-otxt`.
+**Solució:** Llegir del fitxer `wavPath + ".txt"`.
 
-### TTS (Piper)
-- **Binari:** `~/piper/piper/piper`
-- **Veu catalana:** `~/piper/voices/ca_ES-upc_pau-x_low.onnx`
-- **Velocitat:** `lengthScale: 0.85`
+### 3. Processos orfes després de restart
+**Problema:** El bridge Python no es matava correctament al reiniciar.
+**Solució:** `killOrphanedProcesses()` al iniciar que mata processos anteriors.
 
-### STT (Whisper)
-- **Binari:** `~/whisper.cpp/build/bin/whisper-cli`
-- **Model:** `~/whisper.cpp/models/ggml-small.bin`
-- **Llengua:** auto-detect
+### 4. Accions de Telegram expiren
+**Problema:** Els estats (typing, etc.) expiren als 5 segons.
+**Solució:** `setInterval` per refrescar cada 4 segons.
+
+### 5. UPLOAD_AUDIO mostra "Recording voice"
+**Problema:** `ChatAction.UPLOAD_AUDIO` es mostra com "Recording voice" a Telegram.
+**Solució:** Usar `UPLOAD_DOCUMENT` que mostra "Sending a file".
 
 ## 📝 TODO
 
-### Immediat
-1. [ ] Integrar bridge Python-Node.js completament
-2. [ ] Testejar flux text complet amb Clawdbot sessions
-3. [ ] Implementar voice notes (enviar/rebre)
+### ✅ Completat Recentment (2026-01-30)
+- [x] **Servei `telegram-voice`** - Separat del plugin
+  - `service/telegram-voice-service.py` - JSON-RPC server
+  - `src/voice-client.ts` - Client TypeScript
+  - Systemd service instal·lat i funcionant
+  - Gestió d'idioma per conversa integrada
+  - Veure: `docs/ARCHITECTURE.md`
 
-### Proper
-4. [ ] Investigar alternatives per trucades P2P
-5. [ ] Gestió d'errors i retry
-6. [ ] Tests automatitzats
+### Pròxim (Prioritat Alta)
+- [ ] **Integrar voice-client al monitor.ts** - Usar servei extern
+- [ ] **Gestió d'idioma al plugin** - Detectar [LANG:xx] i actualitzar
+
+### Pròxim
+- [ ] Investigar alternatives per trucades P2P
+- [ ] Gestió d'errors i retry més robusta
+- [ ] Tests automatitzats
 
 ### Publicació
-7. [ ] CI/CD pipeline
-8. [ ] Publicar a npm
-9. [ ] PR al catàleg de plugins de Clawdbot
+- [ ] CI/CD pipeline
+- [ ] Publicar a npm
+- [ ] PR al catàleg de plugins de Clawdbot
 
 ## 🤝 Contributors
 
-- **Carles Abarca** - Idea, testing
+- **Carles Abarca** - Idea, testing, direcció
 - **Jarvis (Claude)** - Implementació

@@ -1,11 +1,11 @@
 {
-  "name": "telegram-userbot",
+  "name": "@silverbacking/telegram-userbot",
   "version": "0.1.0",
-  "description": "Telegram voice calls plugin for Clawdbot - 100% local, free stack (Whisper + Piper + Claude)",
+  "description": "Telegram userbot channel plugin for Clawdbot - text, voice notes, and voice calls with 100% local STT/TTS (Whisper + Piper)",
   "author": "Carles Abarca <carles@silverbacking.ai>",
   "license": "MIT",
   "clawdbot": {
-    "extensions": ["./index.ts"],
+    "extensions": ["./dist/index.js"],
     "channel": {
       "id": "telegram-userbot",
       "label": "Telegram Userbot",
@@ -43,6 +43,8 @@
   },
   "files": [
     "dist",
+    "docs",
+    "skills",
     "README.md",
     "clawdbot.plugin.json"
   ],
