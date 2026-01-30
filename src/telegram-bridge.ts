@@ -245,6 +245,12 @@ class TelegramVoiceBridge:
             if not user_id or not self.is_user_allowed(user_id):
                 return
             
+            # Mark message as read (blue double tick)
+            try:
+                await client.read_chat_history(message.chat.id)
+            except:
+                pass
+            
             event_data = {
                 "user_id": user_id,
                 "username": message.from_user.username,
@@ -612,6 +618,9 @@ export class TelegramBridge extends EventEmitter {
         break;
       case "message.private":
         this.emit("message:private", event.data);
+        break;
+      case "message.voice":
+        this.emit("message:voice", event.data);
         break;
       case "warning":
         this.logger.warn(`Bridge warning: ${event.data.message}`);
