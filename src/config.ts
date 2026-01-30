@@ -57,6 +57,8 @@ export const TelegramConfigSchema = z.object({
   pythonEnvPath: z
     .string()
     .default(path.join(os.homedir(), "jarvis-voice-env")),
+  // Passed from parent config for bridge to use
+  allowedUsers: z.array(z.number()).optional(),
 });
 
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
