@@ -183,32 +183,49 @@ La llibreria `py-tgcalls` no suporta captura d'àudio en trucades privades P2P.
 - `pytgvoip` (libtgvoip) - Requereix compilació
 - Notes de veu en lloc de trucades en temps real
 
-## 📁 Fitxers Relacionats
+## 📁 Estructura de Fitxers
 
 ```
-~/jarvis/dev/repos/clawdbot-telegram-userbot/  # Plugin source
-~/.clawdbot/extensions/telegram-userbot/       # Symlink
-~/.clawdbot/clawdbot.json                      # Config
-~/jarvis-voice/                                # Python components
-~/jarvis-voice-env/                            # Python venv
+# Plugin source (development)
+~/jarvis/dev/repos/clawdbot-telegram-userbot/
+├── index.ts              # Entry point
+├── clawdbot.plugin.json  # Manifest
+├── package.json          # Amb clawdbot.extensions
+└── src/                  # Codi font
+
+# Clawdbot integration
+~/.clawdbot/
+├── extensions/
+│   └── telegram-userbot -> ~/jarvis/dev/repos/...  # Symlink
+├── telegram-userbot/
+│   └── session.session   # Sessió Pyrogram
+└── clawdbot.json         # Config
+
+# Python environment (extern al plugin)
+~/jarvis-voice-env/       # Python venv amb pyrogram + pytgcalls
+~/piper/                  # Piper TTS binari + veus
+~/whisper.cpp/            # Whisper STT binari + models
 ```
 
 ## 🔧 Configuració Actual
 
 ### Telegram Userbot
-- **API ID:** 37255096
-- **Session:** `~/jarvis-voice/jarvis_userbot.session`
+- **API ID:** 37255096 (de my.telegram.org)
+- **Session:** `~/.clawdbot/telegram-userbot/session.session`
+- **Python venv:** `~/jarvis-voice-env/`
 
 ### Usuari Autoritzat
 - **Carles ID:** 32975149
 
 ### TTS (Piper)
-- **Path:** `~/piper/piper/piper`
-- **Veu:** `~/piper/voices/ca_ES-upc_pau-x_low.onnx`
+- **Binari:** `~/piper/piper/piper`
+- **Veu catalana:** `~/piper/voices/ca_ES-upc_pau-x_low.onnx`
+- **Velocitat:** `lengthScale: 0.85`
 
 ### STT (Whisper)
-- **Path:** `~/whisper.cpp/build/bin/whisper-cli`
+- **Binari:** `~/whisper.cpp/build/bin/whisper-cli`
 - **Model:** `~/whisper.cpp/models/ggml-small.bin`
+- **Llengua:** auto-detect
 
 ## 📝 TODO
 

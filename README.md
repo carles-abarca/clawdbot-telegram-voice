@@ -77,30 +77,37 @@ Add to your `clawdbot.json`:
         "enabled": true,
         "config": {
           "telegram": {
-            "apiId": 12345678,
-            "apiHash": "your_api_hash",
+            "apiId": 12345678,              // From my.telegram.org
+            "apiHash": "your_api_hash",     // From my.telegram.org
             "phone": "+1234567890",
-            "sessionPath": "/path/to/session/dir"
+            "sessionPath": "~/.clawdbot/telegram-userbot/session",  // Without .session extension
+            "pythonEnvPath": "~/your-python-venv"  // With pyrogram + pytgcalls
           },
           "stt": {
             "provider": "whisper-cpp",
-            "whisperPath": "/path/to/whisper-cli",
-            "modelPath": "/path/to/ggml-small.bin",
+            "whisperPath": "~/whisper.cpp/build/bin/whisper-cli",
+            "modelPath": "~/whisper.cpp/models/ggml-small.bin",
             "language": "auto"
           },
           "tts": {
             "provider": "piper",
-            "piperPath": "/path/to/piper",
-            "voicePath": "/path/to/voice.onnx",
+            "piperPath": "~/piper/piper/piper",
+            "voicePath": "~/piper/voices/en_US-lessac-medium.onnx",
             "lengthScale": 0.85
           },
-          "allowedUsers": [123456789]  // Telegram user IDs
+          "allowedUsers": [123456789]  // Your Telegram user ID
         }
       }
     }
   }
 }
 ```
+
+### Session file
+
+The `sessionPath` should point to the Pyrogram session file **without** the `.session` extension:
+- If your session is at `~/.clawdbot/telegram-userbot/session.session`
+- Set `sessionPath` to `~/.clawdbot/telegram-userbot/session`
 
 ## 🔧 Plugin Structure (for developers)
 
