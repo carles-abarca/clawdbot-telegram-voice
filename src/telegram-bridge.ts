@@ -229,17 +229,9 @@ class TelegramVoiceBridge:
             except Exception as e:
                 self.emit_event("error", {"message": str(e)})
                 
-    def setup_handlers(self):
-        """Setup pytgcalls event handlers for 2.x API"""
+    def setup_message_handlers(self):
+        """Setup Pyrogram message handlers - MUST be called BEFORE app.start()"""
         
-        # Handle stream ended events (pytgcalls 2.x API)
-        @self.pytgcalls.on_update(StreamEnded)
-        async def on_stream_end(client, update: StreamEnded):
-            chat_id = getattr(update, 'chat_id', None)
-            self.emit_event("stream.ended", {"chat_id": chat_id})
-            
-        # Handle incoming private messages (text and voice)
-        @self.app.on_message(filters.private & filters.incoming)
         async def on_private_message(client: Client, message: Message):
             user_id = message.from_user.id if message.from_user else None
             if not user_id or not self.is_user_allowed(user_id):
@@ -269,6 +261,17 @@ class TelegramVoiceBridge:
                 self.emit_event("message.voice", event_data)
             else:
                 self.emit_event("message.private", event_data)
+        
+        # Register handler using add_handler (works before start)
+        self.app.add_handler(MessageHandler(on_private_message, filters.private & filters.incoming))
+                
+    def setup_pytgcalls_handlers(self):
+        """Setup pytgcalls event handlers - called after pyrogram starts"""
+        
+        @self.pytgcalls.on_update(StreamEnded)
+        async def on_stream_end(client, update: StreamEnded):
+            chat_id = getattr(update, 'chat_id', None)
+            self.emit_event("stream.ended", {"chat_id": chat_id})
                 
     async def run(self):
         """Main run loop"""
@@ -281,6 +284,9 @@ class TelegramVoiceBridge:
         signal.signal(signal.SIGTERM, signal_handler)
         
         try:
+            # Setup message handlers BEFORE starting pyrogram
+            self.setup_message_handlers()
+            
             # Start pyrogram (pyrofork)
             await self.app.start()
             me = await self.app.get_me()
@@ -290,8 +296,8 @@ class TelegramVoiceBridge:
                 "name": me.first_name
             })
             
-            # Setup handlers before starting pytgcalls
-            self.setup_handlers()
+            # Setup pytgcalls handlers (after pyrogram starts)
+            self.setup_pytgcalls_handlers()
             
             # Start pytgcalls
             await self.pytgcalls.start()
