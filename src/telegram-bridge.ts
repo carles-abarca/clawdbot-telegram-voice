@@ -234,12 +234,20 @@ class TelegramVoiceBridge:
         bridge = self  # Capture self for closure
         
         async def on_private_message(client: Client, message: Message):
-            # Debug log
-            bridge.emit_event("debug", {"msg": f"Received message from {message.from_user.id if message.from_user else 'unknown'}"})
+            # Debug: log ALL messages received
+            bridge.emit_event("debug", {"msg": f"Handler triggered! Chat type: {message.chat.type}, from: {message.from_user.id if message.from_user else 'none'}"})
+            
+            # Filter: only private chats, only incoming (not our own messages)
+            if message.chat.type.value != "private":
+                return
+            if message.outgoing:
+                return
             
             user_id = message.from_user.id if message.from_user else None
+            bridge.emit_event("debug", {"msg": f"Private message from user {user_id}"})
+            
             if not user_id or not bridge.is_user_allowed(user_id):
-                bridge.emit_event("debug", {"msg": f"User {user_id} not allowed or invalid"})
+                bridge.emit_event("debug", {"msg": f"User {user_id} not allowed"})
                 return
             
             # Mark message as read (blue double tick)
@@ -268,7 +276,8 @@ class TelegramVoiceBridge:
                 bridge.emit_event("message.private", event_data)
         
         # Register handler using add_handler (works before start)
-        self.app.add_handler(MessageHandler(on_private_message, filters.private & filters.incoming))
+        # Use filters.all to catch everything, then filter inside the function
+        self.app.add_handler(MessageHandler(on_private_message, filters.all))
                 
     def setup_pytgcalls_handlers(self):
         """Setup pytgcalls event handlers - called after pyrogram starts"""
