@@ -211,7 +211,18 @@ Un **userbot de Telegram** (usuari normal, NO bot de BotFather) que permeti:
 
 ## 📝 TODO
 
-### ✅ Completat Recentment (2026-01-30)
+### ✅ Completat Recentment (2026-01-31)
+- [x] **Trucades P2P - Fase 1 (Infraestructura)**
+  - Classes `Call`, `IncomingCall`, `OutgoingCall` basades en pytgcalls
+  - `CallService` amb auto-answer configurable
+  - Handler de trucades entrants via `RawUpdateHandler`
+  - Nous mètodes JSON-RPC: `call.accept`, `call.reject`, `call.hangup`, `call.status`, `call.start`
+  - Events: `call.incoming`, `call.connected`, `call.ended`
+  - Integració WebRTC amb `tgcalls.NativeInstance`
+  - Broadcast d'events a tots els clients connectats
+  - Timeout automàtic de trucades (configurable)
+
+### ✅ Completat (2026-01-30)
 - [x] **Servei `telegram-voice`** - Separat del plugin
   - `service/telegram-voice-service.py` - JSON-RPC server
   - `src/voice-client.ts` - Client TypeScript
@@ -219,14 +230,18 @@ Un **userbot de Telegram** (usuari normal, NO bot de BotFather) que permeti:
   - Gestió d'idioma per conversa integrada
   - Veure: `docs/ARCHITECTURE.md`
 
-### Pròxim (Prioritat Alta)
+### 🔄 En Progrés (Trucades P2P - Fase 2)
+- [ ] **Pipeline d'àudio en temps real**
+  - [ ] Captura d'àudio entrant amb callback de frames
+  - [ ] Buffer amb detecció de silenci (VAD)
+  - [ ] Integració amb Whisper per STT durant trucada
+  - [ ] Enviament d'àudio TTS a la trucada
 - [ ] **Integrar voice-client al monitor.ts** - Usar servei extern
 - [ ] **Gestió d'idioma al plugin** - Detectar [LANG:xx] i actualitzar
 
 ### Pròxim
-- [ ] Investigar alternatives per trucades P2P
 - [ ] Gestió d'errors i retry més robusta
-- [ ] Tests automatitzats
+- [ ] Tests automatitzats amb trucades reals
 
 ### Publicació
 - [ ] CI/CD pipeline
