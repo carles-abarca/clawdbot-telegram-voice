@@ -106,7 +106,7 @@ class VoiceService:
         self.voices_dir = self._expand_path(config.get("voicesDir", "~/piper/voices"))
         self.default_voice = self._expand_path(config.get("voicePath", ""))
         self.threads = config.get("threads", 4)
-        self.length_scale = config.get("lengthScale", 0.85)
+        self.length_scale = config.get("lengthScale", 0.60)
         
         log.info(f"VoiceService initialized")
         log.info(f"  Whisper: {self.whisper_path}")
@@ -516,7 +516,7 @@ def load_config() -> Dict:
         "voicesDir": "~/piper/voices",
         "voicePath": "~/piper/voices/ca_ES-upc_pau-x_low.onnx",
         "threads": 4,
-        "lengthScale": 0.85
+        "lengthScale": 0.60
     }
 
 

@@ -533,15 +533,18 @@ export async function monitorTelegramUserbot(opts: MonitorOptions): Promise<void
         }
       } else {
         // Fallback to system event if queue functions not available
+        // Format the message so it looks like it came from telegram-userbot channel
+        // This should trigger the correct routing when processed
         const preview = rawBody.replace(/\s+/g, " ").slice(0, 200);
+        const formattedMessage = `[TelegramUserbot ${senderName}${isVoiceMessage ? " (voice)" : ""} +0s] ${preview}\n[telegram-userbot message_id: ${messageId}]`;
         core.system.enqueueSystemEvent(
-          `[PENDING] Telegram${isVoiceMessage ? " voice" : ""} from ${senderName}: ${preview}`,
+          formattedMessage,
           {
             sessionKey: route.sessionKey,
             contextKey: `telegram-userbot:pending:${senderId}:${messageId}`,
           }
         );
-        logger.info(`Message queued as system event (fallback)`);
+        logger.info(`Message queued as system event (fallback) for user ${senderId}`);
       }
     }
 
