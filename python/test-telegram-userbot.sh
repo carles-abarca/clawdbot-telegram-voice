@@ -17,7 +17,7 @@
 set -o pipefail
 
 # Config
-VOICE_CLI="$HOME/.clawdbot/telegram-userbot/telegram-voice-cli.py"
+VOICE_CLI="$HOME/.clawdbot/tts-stt-service/tts-stt-cli.py"
 VENV="$HOME/.clawdbot/telegram-userbot/venv/bin/python"
 SOCKET="/run/user/$(id -u)/tts-stt.sock"
 QUICK_MODE=false
@@ -167,7 +167,7 @@ section "PREREQUISITES"
 
 PREREQS_OK=true
 
-check_prereq "telegram-voice.service" "systemctl --user is-active telegram-voice" || PREREQS_OK=false
+check_prereq "tts-stt.service" "systemctl --user is-active tts-stt" || PREREQS_OK=false
 check_prereq "Voice socket exists" "test -S $SOCKET" || PREREQS_OK=false
 check_prereq "telegram-text-bridge running" "pgrep -f 'telegram-text-bridge'" || PREREQS_OK=false
 check_prereq "voice-cli executable" "test -x $VOICE_CLI" || PREREQS_OK=false
@@ -177,7 +177,7 @@ check_prereq "Piper TTS" "test -x ~/piper/piper/piper" || PREREQS_OK=false
 check_prereq "ffmpeg" "which ffmpeg" || PREREQS_OK=false
 
 echo ""
-warn_check "Voice service memory (MB)" "ps aux | grep -v grep | grep telegram-voice-service | awk '{print int(\$6/1024)}' | head -1" 2000
+warn_check "Voice service memory (MB)" "ps aux | grep -v grep | grep tts-stt-service | awk '{print int(\$6/1024)}' | head -1" 2000
 warn_check "Bridge memory (MB)" "ps aux | grep -v grep | grep telegram-text-bridge | awk '{print int(\$6/1024)}' | head -1" 500
 
 if [ "$PREREQS_OK" = false ]; then

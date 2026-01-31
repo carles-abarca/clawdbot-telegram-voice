@@ -1,0 +1,15 @@
+[Unit]
+Description=Generic TTS/STT Service (Whisper + Piper)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.clawdbot/tts-stt-service/venv/bin/python %h/.clawdbot/tts-stt-service/tts-stt-service.py
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+MemoryMax=3G
+MemoryHigh=2G
+
+[Install]
+WantedBy=default.target
