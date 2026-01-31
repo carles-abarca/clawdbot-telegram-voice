@@ -74,7 +74,7 @@ export class VoiceClient {
     // Detectar plataforma
     if (process.platform === "linux") {
       this.transport = "unix";
-      this.socketPath = `/run/user/${process.getuid?.() ?? 1000}/telegram-voice.sock`;
+      this.socketPath = `/run/user/${process.getuid?.() ?? 1000}/tts-stt.sock`;
       this.tcpHost = "";
       this.tcpPort = 0;
     } else {

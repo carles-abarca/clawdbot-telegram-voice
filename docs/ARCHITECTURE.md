@@ -65,7 +65,7 @@ El sistema es divideix en **dos components separats** per garantir estabilitat i
 
 | Plataforma | Transport | Path/Port |
 |------------|-----------|-----------|
-| Linux | Unix Domain Socket | `/run/user/{UID}/telegram-voice.sock` |
+| Linux | Unix Domain Socket | `/run/user/{UID}/tts-stt.sock` |
 | macOS | TCP localhost | `127.0.0.1:18790` |
 
 **Nota:** macOS no suporta Unix sockets tan bé com Linux per a serveis, per això usem TCP localhost.

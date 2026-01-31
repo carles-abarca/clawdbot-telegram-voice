@@ -218,7 +218,7 @@ Download voices from [Piper Voices](https://github.com/rhasspy/piper/blob/master
 
 ### Voice Service (Unix Socket)
 
-Socket path: `/run/user/$UID/telegram-voice.sock`
+Socket path: `/run/user/$UID/tts-stt.sock`
 
 #### Methods
 

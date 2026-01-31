@@ -19,7 +19,7 @@ set -o pipefail
 # Config
 VOICE_CLI="$HOME/.clawdbot/telegram-userbot/telegram-voice-cli.py"
 VENV="$HOME/.clawdbot/telegram-userbot/venv/bin/python"
-SOCKET="/run/user/$(id -u)/telegram-voice.sock"
+SOCKET="/run/user/$(id -u)/tts-stt.sock"
 QUICK_MODE=false
 VERBOSE=false
 

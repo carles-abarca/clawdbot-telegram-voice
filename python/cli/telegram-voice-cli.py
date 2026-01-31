@@ -21,7 +21,7 @@ import subprocess
 from pathlib import Path
 
 # Socket path
-SOCKET_PATH = f"/run/user/{os.getuid()}/telegram-voice.sock"
+SOCKET_PATH = f"/run/user/{os.getuid()}/tts-stt.sock"
 
 def send_request(method: str, params: dict = None) -> dict:
     """Send JSON-RPC request to the service"""

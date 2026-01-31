@@ -64,7 +64,7 @@ def calc_fingerprint(key: bytes) -> int:
 class VoiceServiceClient:
     """Client to communicate with voice-service via Unix socket"""
     
-    def __init__(self, socket_path: str = "/run/user/1000/telegram-voice.sock"):
+    def __init__(self, socket_path: str = "/run/user/1000/tts-stt.sock"):
         self.socket_path = socket_path
         self._request_id = 0
         
