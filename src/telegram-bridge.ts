@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import readline from "node:readline";
+import { fileURLToPath } from "node:url";
 
 import type { TelegramConfig } from "./config.js";
 import type { 
@@ -22,8 +23,29 @@ import type {
   Logger,
 } from "./types.js";
 
-// Lightweight Python bridge script - NO pytgcalls
-const BRIDGE_SCRIPT = `#!/usr/bin/env python3
+// Get directory of this module to find the Python script
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Possible paths for the external Python bridge script
+// (supports both dev: src/ and built: dist/src/)
+const BRIDGE_SCRIPT_PATHS = [
+  path.join(__dirname, "telegram-text-bridge.py"),           // Same dir as .js
+  path.join(__dirname, "..", "src", "telegram-text-bridge.py"),  // dist/ → src/
+  path.join(__dirname, "..", "..", "src", "telegram-text-bridge.py"),  // dist/src/ → src/
+];
+
+function findBridgeScript(): string | null {
+  for (const p of BRIDGE_SCRIPT_PATHS) {
+    if (fs.existsSync(p)) {
+      return p;
+    }
+  }
+  return null;
+}
+
+// Legacy fallback - embedded script (only used if external file not found)
+const BRIDGE_SCRIPT_FALLBACK = `#!/usr/bin/env python3
 """
 Telegram Text Bridge - Lightweight version (NO pytgcalls)
 Only handles text messages via Pyrogram
@@ -428,8 +450,20 @@ export class TelegramBridge extends EventEmitter {
     // Kill any orphaned bridge processes from previous runs
     await this.killOrphanedProcesses();
 
-    // Write bridge script
-    fs.writeFileSync(this.bridgeScriptPath, BRIDGE_SCRIPT, { mode: 0o755 });
+    // Load bridge script from external file (preferred) or use embedded fallback
+    let bridgeScript: string;
+    const externalScriptPath = findBridgeScript();
+    if (externalScriptPath) {
+      this.logger.info(`Loading bridge script from: ${externalScriptPath}`);
+      bridgeScript = fs.readFileSync(externalScriptPath, "utf-8");
+    } else {
+      this.logger.warn(`External bridge script not found in any of: ${BRIDGE_SCRIPT_PATHS.join(", ")}`);
+      this.logger.warn("Using embedded fallback (may be outdated)");
+      bridgeScript = BRIDGE_SCRIPT_FALLBACK;
+    }
+
+    // Write bridge script to temp location
+    fs.writeFileSync(this.bridgeScriptPath, bridgeScript, { mode: 0o755 });
 
     // Get Python path from venv
     const pythonPath = path.join(this.config.pythonEnvPath, "bin", "python3");
