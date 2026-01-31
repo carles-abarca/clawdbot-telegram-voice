@@ -2,7 +2,7 @@
 
 ## 📋 Status: Active Development
 
-**Last Updated:** 2026-01-30 12:14
+**Last Updated:** 2026-01-31 13:20
 
 ## 🎯 Vision
 
@@ -53,6 +53,28 @@ Un **userbot de Telegram** (usuari normal, NO bot de BotFather) que permeti:
 - [x] Notes de veu **sense "Jarvis"** demanen a Claude:
   - Transcripció original
   - Traducció a la llengua de la conversa
+
+### P2P Voice Calls (2026-01-31)
+- [x] **CLI de trucades:** `telegram-call-cli.py`
+- [x] Trucades sortints funcionen (PhoneCallWaiting → PhoneCallAccepted → Confirmed)
+- [x] Signaling Diffie-Hellman funcionant
+- [ ] **⚠️ tgcalls segfault:** `NativeInstance.startCall()` fa crash
+  - Versió: tgcalls v3.0.0.6 DEV
+  - La trucada s'estableix però l'àudio no funciona
+  - Pendent: investigar compatibilitat tgcalls o alternativa
+
+**Arquitectura de trucades:**
+```
+telegram-text-bridge.py (Pyrogram)  ← Gestiona trucades P2P
+         │
+         └─► calls via MTProto (phone.RequestCall, phone.ConfirmCall)
+         
+telegram-voice-service.py          ← NOMÉS TTS/STT (sense Pyrogram)
+         │
+         └─► Unix socket per transcripció/síntesi
+```
+
+**Important:** Les trucades van pel bridge, NO pel voice-service, per evitar conflictes de sessió SQLite.
 
 ### Robustesa (2026-01-30)
 - [x] **Cleanup de processos orfes** al iniciar el bridge
@@ -185,7 +207,45 @@ Un **userbot de Telegram** (usuari normal, NO bot de BotFather) que permeti:
 │   ├── tts.ts                  # PiperTTS class
 │   └── types.ts                # TypeScript types
 └── dist/                       # Compiled JS
+
+~/.clawdbot/telegram-userbot/      # Runtime data
+├── session.session             # Pyrogram session (bridge)
+├── session-call.session        # Pyrogram session (CLI trucades)
+├── voice-service-config.json   # Config del voice service
+├── telegram-voice-cli.py       # CLI per testejar TTS/STT
+├── telegram-call-cli.py        # CLI per testejar trucades
+├── telegram-voice-service.py   # Servei TTS/STT (systemd)
+└── venv/                       # Python virtualenv
 ```
+
+## 🛠️ CLI de Testeig
+
+### TTS/STT (`telegram-voice-cli.py`)
+```bash
+source ~/.clawdbot/telegram-userbot/venv/bin/activate
+
+# Status
+python telegram-voice-cli.py status
+
+# Transcriure àudio
+python telegram-voice-cli.py transcribe audio.ogg
+
+# Generar veu
+python telegram-voice-cli.py synthesize "Hola món"
+```
+
+### Trucades (`telegram-call-cli.py`)
+```bash
+source ~/.clawdbot/telegram-userbot/venv/bin/activate
+
+# Status
+python telegram-call-cli.py status
+
+# Trucar (usa session-call.session)
+python telegram-call-cli.py call 32975149 --duration 60
+```
+
+**Nota:** El CLI de trucades usa una sessió separada (`session-call`) per no interferir amb el bridge.
 
 ## 🐛 Bugs Resolts
 
@@ -221,6 +281,21 @@ Un **userbot de Telegram** (usuari normal, NO bot de BotFather) que permeti:
   - Integració WebRTC amb `tgcalls.NativeInstance`
   - Broadcast d'events a tots els clients connectats
   - Timeout automàtic de trucades (configurable)
+- [x] **CLI de Trucades** (`telegram-call-cli.py`)
+  - Trucades de prova independents del bridge
+  - Usa sessió separada (`session-call`) per evitar conflictes
+  - Signaling DH complet (request → accept → confirm)
+  - ⚠️ Àudio no funciona (tgcalls segfault)
+- [x] **Separació de serveis**
+  - `telegram-text-bridge.py` → missatges + trucades (Pyrogram)
+  - `telegram-voice-service.py` → TTS/STT pesats (sense Pyrogram)
+  - Evita conflictes de sessió SQLite i crashes del gateway
+
+### 🔴 Problemes Coneguts (2026-01-31)
+- **tgcalls v3.0.0.6 DEV fa segfault** a `NativeInstance.startCall()`
+  - La trucada s'estableix correctament (signaling OK)
+  - El crash és al setup de WebRTC/àudio
+  - Opcions: downgrade tgcalls, provar ntgcalls, o usar només signaling
 
 ### ✅ Completat (2026-01-30)
 - [x] **Servei `telegram-voice`** - Separat del plugin
