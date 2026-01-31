@@ -40,22 +40,38 @@ async function loadQueueFunctions() {
 }
 
 async function findClawdbotPath(): Promise<string | null> {
+  const { existsSync, readdirSync } = await import("fs");
+  const home = process.env.HOME || "";
+  
   // Try common installation paths
-  const paths = [
-    // Global npm installations (nvm)
-    `${process.env.HOME}/.nvm/versions/node/${process.version}/lib/node_modules/clawdbot`,
+  const staticPaths = [
     // Global npm without nvm
     "/usr/local/lib/node_modules/clawdbot",
     "/usr/lib/node_modules/clawdbot",
-    // Try to resolve from the plugin's node_modules (symlinked)
   ];
   
-  const { existsSync } = await import("fs");
-  for (const p of paths) {
+  for (const p of staticPaths) {
     if (existsSync(p)) {
       return p;
     }
   }
+  
+  // Check nvm versions directory (any version)
+  const nvmVersionsDir = `${home}/.nvm/versions/node`;
+  if (existsSync(nvmVersionsDir)) {
+    try {
+      const versions = readdirSync(nvmVersionsDir);
+      for (const ver of versions) {
+        const clawdbotPath = `${nvmVersionsDir}/${ver}/lib/node_modules/clawdbot`;
+        if (existsSync(clawdbotPath)) {
+          return clawdbotPath;
+        }
+      }
+    } catch {
+      // Ignore read errors
+    }
+  }
+  
   return null;
 }
 
