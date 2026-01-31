@@ -9,6 +9,30 @@ import { getTelegramUserbotRuntime } from "./runtime.js";
 import type { TelegramUserbotConfig, TelegramConfig } from "./config.js";
 import type { TelegramBridge } from "./telegram-bridge.js";
 import { getVoiceClient, type VoiceClient } from "./voice-client.js";
+import { storeVoiceContext, consumeVoiceContext, hasVoiceContext } from "./voice-context.js";
+
+// Queue functions will be loaded dynamically at runtime
+let enqueueFollowupRun: ((key: string, run: any, settings: any) => boolean) | null = null;
+let scheduleFollowupDrain: ((key: string, runFollowup: (run: any) => Promise<void>) => void) | null = null;
+let queueFunctionsLoaded = false;
+
+async function loadQueueFunctions() {
+  if (queueFunctionsLoaded) return;
+  try {
+    // Use require for CommonJS compatibility
+    const { createRequire } = await import("module");
+    const require = createRequire(import.meta.url);
+    const queueModule = require("clawdbot/dist/auto-reply/reply/queue.js");
+    enqueueFollowupRun = queueModule.enqueueFollowupRun;
+    scheduleFollowupDrain = queueModule.scheduleFollowupDrain;
+    console.log(`[telegram-userbot] Queue functions loaded successfully`);
+    queueFunctionsLoaded = true;
+  } catch (err) {
+    // Queue functions not available, will fall back to system events
+    console.log(`[telegram-userbot] Queue functions not available (fallback to system events): ${err}`);
+    queueFunctionsLoaded = true;
+  }
+}
 
 export type MonitorOptions = {
   bridge: TelegramBridge;
@@ -41,6 +65,9 @@ interface IncomingMessage {
 
 export async function monitorTelegramUserbot(opts: MonitorOptions): Promise<void> {
   const { bridge, config, accountId, statusSink, log } = opts;
+  
+  // Try to load queue functions for proper message routing
+  await loadQueueFunctions();
   
   // Use passed logger or fallback to console
   const logger = log ?? {
@@ -142,25 +169,19 @@ export async function monitorTelegramUserbot(opts: MonitorOptions): Promise<void
           }
         }
         
-        // Check if transcription starts with bot name (or common Whisper mishearings)
-        const trimmedText = messageText.trim().toLowerCase();
-        const botNameLower = botName.toLowerCase();
-        // Common Whisper transcription variations of "Jarvis"
-        const botNameVariants = [
-          botNameLower,
-          "xervis",    // Catalan interpretation
-          "jarvi",     // Truncated
-          "jarbis",    // Mishearing
-          "charvis",   // Spanish J sound
-          "yarvis",    // Soft J
-          "gervis",    // German-ish
-        ];
+        // SEMPRE voice-to-voice per notes de veu
+        wantsVoiceResponse = true;
+        logger.info(`Voice-to-voice: transcribed (lang=${result.language})`);
         
-        const matchedVariant = botNameVariants.find(variant => trimmedText.startsWith(variant));
-        if (matchedVariant) {
-          wantsVoiceResponse = true;
-          logger.info(`Voice-to-voice mode activated (matched "${matchedVariant}" for "${botName}")`);
-        }
+        // Store voice context in case session is busy and we need TTS later
+        storeVoiceContext({
+          userId,
+          messageId: String(data.message_id),
+          language: result.language || "ca",
+          timestamp: Date.now(),
+          wantsVoiceResponse: true,
+        });
+        logger.debug(`Voice context stored for user ${userId}`);
         
         // Check for language change request in response
         // Format: [LANG:xx] at the start of Claude's response
@@ -181,14 +202,8 @@ export async function monitorTelegramUserbot(opts: MonitorOptions): Promise<void
         logVerbose(`telegram-userbot: mark_read failed: ${err}`);
       }
       
-      // If NOT voice-to-voice mode, wrap for translation
-      if (!wantsVoiceResponse && messageText.trim()) {
-        messageText = `[NOTA DE VEU REBUDA - No és una petició directa a mi. Mostra la transcripció original i la traducció a la llengua de la nostra conversa]\n\nTranscripció: "${messageText}"`;
-        logger.info(`Wrapped transcription for Claude to translate`);
-      }
-      
-      // Start appropriate action
-      const nextAction = wantsVoiceResponse ? "record_audio" : "typing";
+      // Start recording audio action (voice response incoming)
+      const nextAction = "record_audio";
       try {
         await bridge.request("chat_action", { user_id: data.user_id, action_type: nextAction });
       } catch (err) {
@@ -395,8 +410,19 @@ export async function monitorTelegramUserbot(opts: MonitorOptions): Promise<void
             }
             
             try {
+              // Check if there's pending voice context (for queued messages)
+              let useVoiceResponse = wantsVoiceResponse;
+              let pendingVoiceCtx = null;
+              if (!useVoiceResponse && voiceServiceAvailable) {
+                pendingVoiceCtx = consumeVoiceContext(userId);
+                if (pendingVoiceCtx) {
+                  useVoiceResponse = true;
+                  logger.info(`Using pending voice context for user ${userId} (lang=${pendingVoiceCtx.language})`);
+                }
+              }
+              
               // Voice response if voice-to-voice mode and service available
-              if (wantsVoiceResponse && voiceServiceAvailable) {
+              if (useVoiceResponse && voiceServiceAvailable) {
                 // Strip markdown formatting and emojis for TTS
                 const cleanText = text
                   // Remove emojis
@@ -470,6 +496,53 @@ export async function monitorTelegramUserbot(opts: MonitorOptions): Promise<void
       logger.info(`Dispatch completed, sentMessage=${sentMessage}`);
     } catch (err) {
       logger.error(`Dispatch failed: ${err}`);
+    }
+
+    // If no message was sent (session was busy), queue it properly with originating channel
+    if (!sentMessage) {
+      logger.warn(`No response sent (session may be busy), queueing message for processing`);
+      
+      // Try to use proper followup queue with originating channel info
+      if (enqueueFollowupRun && scheduleFollowupDrain) {
+        const queueKey = route.sessionKey;
+        const followupRun = {
+          prompt: `[TelegramUserbot ${senderName}${isVoiceMessage ? " 🎤" : ""}] ${rawBody}\n[message_id: ${messageId}]`,
+          messageId: messageId,
+          summaryLine: `${senderName}: ${rawBody.substring(0, 50)}...`,
+          run: {
+            sessionKey: route.sessionKey,
+            channel: "telegram-userbot",
+            accountId: route.accountId,
+          },
+          originatingChannel: "telegram-userbot",
+          originatingTo: `telegram-userbot:${senderId}`,
+          originatingAccountId: route.accountId,
+          enqueuedAt: Date.now(),
+        };
+        
+        const queued = enqueueFollowupRun(queueKey, followupRun, { mode: "collect" });
+        if (queued) {
+          logger.info(`Message queued with originatingChannel=telegram-userbot for user ${senderId}`);
+          // Schedule drain to process the queue when ready
+          scheduleFollowupDrain(queueKey, async (run) => {
+            logger.info(`Processing queued message for ${senderId}`);
+            // The response will be routed back to telegram-userbot channel
+          });
+        } else {
+          logger.warn(`Failed to queue message (duplicate or dropped)`);
+        }
+      } else {
+        // Fallback to system event if queue functions not available
+        const preview = rawBody.replace(/\s+/g, " ").slice(0, 200);
+        core.system.enqueueSystemEvent(
+          `[PENDING] Telegram${isVoiceMessage ? " voice" : ""} from ${senderName}: ${preview}`,
+          {
+            sessionKey: route.sessionKey,
+            contextKey: `telegram-userbot:pending:${senderId}:${messageId}`,
+          }
+        );
+        logger.info(`Message queued as system event (fallback)`);
+      }
     }
 
     if (sentMessage) {

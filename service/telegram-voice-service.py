@@ -118,28 +118,33 @@ class VoiceService:
             return ""
         return os.path.expanduser(os.path.expandvars(p))
     
-    async def transcribe(self, audio_path: str, user_id: Optional[str] = None) -> Dict:
-        """Transcriu àudio a text"""
-        language = self.state.get_language(user_id) if user_id else "ca"
-        lang_code = self.SUPPORTED_LANGUAGES.get(language, {}).get("whisper", language)
+    async def transcribe(self, audio_path: str, user_id: Optional[str] = None, force_language: Optional[str] = None) -> Dict:
+        """Transcriu àudio a text amb detecció automàtica d'idioma"""
         
-        log.info(f"Transcribing {audio_path} with language={lang_code}")
+        log.info(f"Transcribing {audio_path} (auto-detect language)")
         
         # Convertir a WAV si cal
         wav_path = await self._ensure_wav(audio_path)
         
-        # Executar Whisper
+        # Executar Whisper SENSE forçar idioma (detecció automàtica)
         output_base = str(self.tmp_dir / f"transcript_{os.getpid()}")
         cmd = [
             self.whisper_path,
             "-m", self.whisper_model,
             "-f", wav_path,
-            "-l", lang_code,  # Forçar idioma
+            # NO forcem -l per permetre detecció automàtica
             "-t", str(self.threads),
             "-otxt",
             "-of", output_base,
-            "--no-timestamps"
+            "--no-timestamps",
+            "--print-special"  # Per veure l'idioma detectat
         ]
+        
+        # Si es força un idioma específic, usar-lo
+        if force_language:
+            lang_code = self.SUPPORTED_LANGUAGES.get(force_language, {}).get("whisper", force_language)
+            cmd.extend(["-l", lang_code])
+            log.info(f"  Forced language: {lang_code}")
         
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -161,9 +166,17 @@ class VoiceService:
             else:
                 text = stdout.decode().strip()
             
+            # Detectar idioma des de la sortida de Whisper
+            detected_language = self._detect_language_from_output(stderr.decode(), text)
+            log.info(f"  Detected language: {detected_language}")
+            
+            # Guardar l'idioma detectat per aquest usuari (per la resposta TTS)
+            if user_id and detected_language:
+                self.state.set_language(str(user_id), detected_language)
+            
             return {
                 "text": text,
-                "language": language,
+                "language": detected_language,
                 "audio_path": audio_path
             }
             
@@ -251,6 +264,49 @@ class VoiceService:
             "default_language": self.state.state["defaults"]["language"],
             "active_users": len(self.state.state["users"])
         }
+    
+    def _detect_language_from_output(self, stderr: str, text: str) -> str:
+        """Detecta l'idioma des de la sortida de Whisper o del text"""
+        import re
+        
+        # Whisper pot indicar l'idioma a stderr amb "auto-detected language: xx"
+        lang_match = re.search(r'auto-detected language[:\s]+(\w+)', stderr, re.IGNORECASE)
+        if lang_match:
+            detected = lang_match.group(1).lower()
+            # Mappejar codis de Whisper als nostres codis
+            lang_map = {"spanish": "es", "catalan": "ca", "english": "en", 
+                       "es": "es", "ca": "ca", "en": "en"}
+            if detected in lang_map:
+                return lang_map[detected]
+        
+        # Fallback: heurística basada en el text
+        if text:
+            text_lower = text.lower()
+            # Paraules típiques espanyoles (no catalanes)
+            spanish_markers = ["¿", "está", "estás", "qué", "cómo", "dónde", "cuándo", 
+                             "tengo", "tienes", "tiene", "puedo", "puedes", "puede",
+                             "quiero", "quieres", "necesito", "algún", "alguna"]
+            # Paraules típiques catalanes
+            catalan_markers = ["què", "com", "on", "quan", "tinc", "tens", "té",
+                              "puc", "pots", "pot", "vull", "vols", "vol", 
+                              "necessito", "algun", "alguna", "però", "això"]
+            # Paraules típiques angleses
+            english_markers = ["the", "what", "how", "where", "when", "have", "has",
+                              "can", "could", "want", "need", "some", "any"]
+            
+            spanish_count = sum(1 for m in spanish_markers if m in text_lower)
+            catalan_count = sum(1 for m in catalan_markers if m in text_lower)
+            english_count = sum(1 for m in english_markers if m in text_lower)
+            
+            if spanish_count > catalan_count and spanish_count > english_count:
+                return "es"
+            elif catalan_count > spanish_count and catalan_count > english_count:
+                return "ca"
+            elif english_count > 0:
+                return "en"
+        
+        # Default: espanyol si no podem determinar (més comú a Monterrey)
+        return "es"
     
     async def _ensure_wav(self, audio_path: str) -> str:
         """Converteix a WAV si cal (opus, ogg, etc.)"""

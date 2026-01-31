@@ -12,6 +12,8 @@ import { TelegramBridge } from "./telegram-bridge.js";
 import { monitorTelegramUserbot } from "./monitor.js";
 import { getTelegramUserbotRuntime } from "./runtime.js";
 import { expandPath, type TelegramUserbotConfig } from "./config.js";
+import { consumeVoiceContext } from "./voice-context.js";
+import { getVoiceClient } from "./voice-client.js";
 
 // Plugin state
 let activeBridge: TelegramBridge | null = null;
@@ -180,9 +182,47 @@ export const telegramUserbotPlugin: ChannelPlugin<ResolvedTelegramUserbotAccount
       if (!activeBridge?.isConnected) {
         return { ok: false, error: "Bridge not connected" };
       }
+      
+      const userId = parseInt(to, 10);
+      
+      // Check if user has pending voice context (wants TTS response)
+      const voiceContext = consumeVoiceContext(to);
+      
+      if (voiceContext) {
+        // User sent a voice message → respond with voice
+        console.log(`[telegram-userbot] Voice context found for ${to}, converting to TTS (lang=${voiceContext.language})`);
+        
+        try {
+          const voiceClient = getVoiceClient();
+          const isAvailable = await voiceClient.isAvailable();
+          
+          if (isAvailable) {
+            // Synthesize text to speech
+            const result = await voiceClient.synthesize(text, to);
+            
+            if (result.audio_path && !result.error) {
+              // Send as voice note
+              await activeBridge.request("send_voice", {
+                user_id: userId,
+                audio_path: result.audio_path,
+              });
+              console.log(`[telegram-userbot] Voice response sent to ${to}`);
+              return { ok: true, channel: "telegram-userbot" };
+            } else {
+              console.warn(`[telegram-userbot] TTS failed: ${result.error}, falling back to text`);
+            }
+          } else {
+            console.warn(`[telegram-userbot] Voice service not available, falling back to text`);
+          }
+        } catch (error) {
+          console.error(`[telegram-userbot] TTS error: ${error}, falling back to text`);
+        }
+      }
+      
+      // Default: send as text
       try {
         await activeBridge.request("send_text", {
-          user_id: parseInt(to, 10),
+          user_id: userId,
           text,
         });
         return { ok: true, channel: "telegram-userbot" };
