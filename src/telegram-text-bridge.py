@@ -1,19 +1,495 @@
 #!/usr/bin/env python3
 """
-Telegram Text Bridge - Lightweight version (NO pytgcalls)
-Handles text, media, and location messages via Pyrogram
+Telegram Text Bridge - Extended version with Phone Calls support
+Handles text, media, location messages AND voice calls via Pyrogram
 """
 
 import asyncio
+import hashlib
 import json
-import sys
 import os
 import signal
+import sys
 from pathlib import Path
+from random import randint
+from typing import Union
 
-from pyrogram import Client, filters
+from pyrogram import Client, filters, ContinuePropagation, StopPropagation
+from pyrogram.handlers import RawUpdateHandler
+from pyrogram.raw import functions, types
 from pyrogram.types import Message
+from pyrogram import errors
 
+# Try to import tgcalls for native audio handling
+try:
+    import tgcalls
+    TGCALLS_AVAILABLE = True
+except ImportError:
+    TGCALLS_AVAILABLE = False
+    print("WARNING: tgcalls not available, call audio will not work", file=sys.stderr)
+
+
+# =====================================================
+# Helper functions for crypto (from pytgcalls/helpers.py)
+# =====================================================
+
+twoe1984 = 1 << 1984  # 2^1984
+
+def i2b(value: int) -> bytes:
+    """Convert integer value to bytes"""
+    return int.to_bytes(
+        value, length=(value.bit_length() + 8 - 1) // 8, byteorder='big', signed=False
+    )
+
+def b2i(value: bytes) -> int:
+    """Convert bytes value to integer"""
+    return int.from_bytes(value, 'big')
+
+def check_g(g_x: int, p: int) -> None:
+    """Check g_ numbers"""
+    if not (1 < g_x < p - 1):
+        raise ValueError('g_x is invalid (1 < g_x < p - 1 is false)')
+    if not (twoe1984 < g_x < p - twoe1984):
+        raise ValueError('g_x is invalid (2^1984 < g_x < p - 2^1984 is false)')
+
+def calc_fingerprint(key: bytes) -> int:
+    """Calculate key fingerprint"""
+    return int.from_bytes(bytes(hashlib.sha1(key).digest()[-8:]), 'little', signed=True)
+
+
+# =====================================================
+# Voice Service JSON-RPC Client
+# =====================================================
+
+class VoiceServiceClient:
+    """Client to communicate with voice-service via Unix socket"""
+    
+    def __init__(self, socket_path: str = "/run/user/1000/telegram-voice.sock"):
+        self.socket_path = socket_path
+        self._request_id = 0
+        
+    async def call(self, method: str, params: dict = None) -> dict:
+        """Make a JSON-RPC call to voice-service"""
+        try:
+            reader, writer = await asyncio.open_unix_connection(self.socket_path)
+            
+            self._request_id += 1
+            request = {
+                "jsonrpc": "2.0",
+                "id": self._request_id,
+                "method": method,
+                "params": params or {}
+            }
+            
+            data = json.dumps(request) + "\n"
+            writer.write(data.encode())
+            await writer.drain()
+            
+            response_line = await asyncio.wait_for(reader.readline(), timeout=30.0)
+            writer.close()
+            await writer.wait_closed()
+            
+            if response_line:
+                return json.loads(response_line.decode())
+            return {"error": "Empty response"}
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    async def stt(self, audio_path: str) -> str:
+        """Speech to text"""
+        result = await self.call("stt", {"audio_path": audio_path})
+        if "result" in result:
+            return result["result"].get("text", "")
+        return ""
+    
+    async def tts(self, text: str, output_path: str = None) -> str:
+        """Text to speech, returns audio path"""
+        params = {"text": text}
+        if output_path:
+            params["output_path"] = output_path
+        result = await self.call("tts", params)
+        if "result" in result:
+            return result["result"].get("audio_path", "")
+        return ""
+
+
+# =====================================================
+# Phone Call Classes (from pytgcalls)
+# =====================================================
+
+class DH:
+    """Diffie-Hellman config"""
+    def __init__(self, dhc: types.messages.DhConfig):
+        self.p = b2i(dhc.p)
+        self.g = dhc.g
+        self.resp = dhc
+
+    def __repr__(self):
+        return f'<DH p={self.p} g={self.g}>'
+
+
+class Call:
+    """Base class for phone calls"""
+    
+    def __init__(self, client: Client, bridge: 'TelegramTextBridge'):
+        if not client.is_connected:
+            raise RuntimeError('Client must be started first')
+
+        self.client = client
+        self.bridge = bridge
+        self.native_instance = None
+
+        self.call = None
+        self.call_access_hash = None
+        self.peer = None
+        self.call_peer = None
+        self.state = None
+        
+        # Caller info
+        self.caller_id = None
+        self.caller_username = None
+        self.caller_name = None
+
+        # Diffie-Hellman
+        self.dhc = None
+        self.a = None
+        self.g_a = None
+        self.g_a_hash = None
+        self.b = None
+        self.g_b = None
+        self.g_b_hash = None
+        self.auth_key = None
+        self.key_fingerprint = None
+
+        self.init_encrypted_handlers = []
+        
+        # Audio handling
+        self._audio_queue = asyncio.Queue()
+        self._audio_task = None
+
+    async def process_update(self, _, update, users, chats):
+        if isinstance(update, types.UpdatePhoneCallSignalingData) and self.native_instance:
+            self.native_instance.receiveSignalingData([x for x in update.data])
+
+        if not isinstance(update, types.UpdatePhoneCall):
+            raise ContinuePropagation
+
+        call = update.phone_call
+        if not self.call or not call or call.id != self.call.id:
+            raise ContinuePropagation
+        self.call = call
+
+        if hasattr(call, 'access_hash') and call.access_hash:
+            self.call_access_hash = call.access_hash
+            self.call_peer = types.InputPhoneCall(id=self.call_id, access_hash=self.call_access_hash)
+            try:
+                await self.received_call()
+            except Exception as e:
+                print(f"Error in received_call: {e}", file=sys.stderr)
+
+        if isinstance(call, types.PhoneCallDiscarded):
+            self.call_discarded()
+            raise StopPropagation
+
+    @property
+    def auth_key_bytes(self) -> bytes:
+        return i2b(self.auth_key) if self.auth_key is not None else b''
+
+    @property
+    def call_id(self) -> int:
+        return self.call.id if self.call else 0
+
+    @staticmethod
+    def get_protocol() -> types.PhoneCallProtocol:
+        return types.PhoneCallProtocol(
+            min_layer=92,
+            max_layer=92,
+            udp_p2p=True,
+            udp_reflector=True,
+            library_versions=['3.0.0'],
+        )
+
+    async def get_dhc(self):
+        self.dhc = DH(await self.client.invoke(functions.messages.GetDhConfig(version=0, random_length=256)))
+        return self.dhc
+
+    def check_g(self, g_x: int, p: int) -> None:
+        try:
+            check_g(g_x, p)
+        except RuntimeError:
+            self.call_discarded()
+            raise
+
+    def stop(self) -> None:
+        if self._audio_task:
+            self._audio_task.cancel()
+        self.bridge._remove_call(self)
+
+    def update_state(self, val: str) -> None:
+        old_state = self.state
+        self.state = val
+        self.bridge.emit_event("call.state_changed", {
+            "call_id": self.call_id,
+            "state": val,
+            "old_state": old_state,
+            "caller_id": self.caller_id,
+        })
+
+    def call_ended(self) -> None:
+        self.update_state('ENDED')
+        self.stop()
+
+    def call_failed(self, error=None) -> None:
+        print(f'Call {self.call_id} failed with error {error}', file=sys.stderr)
+        self.update_state('FAILED')
+        self.stop()
+
+    def call_discarded(self):
+        if isinstance(self.call.reason, types.PhoneCallDiscardReasonBusy):
+            self.update_state('BUSY')
+            self.stop()
+        else:
+            self.call_ended()
+
+    async def received_call(self):
+        await self.client.invoke(
+            functions.phone.ReceivedCall(peer=types.InputPhoneCall(id=self.call_id, access_hash=self.call_access_hash))
+        )
+
+    async def discard_call(self, reason=None):
+        if not reason:
+            reason = types.PhoneCallDiscardReasonDisconnect()
+        try:
+            await self.client.invoke(
+                functions.phone.DiscardCall(
+                    peer=types.InputPhoneCall(id=self.call_id, access_hash=self.call_access_hash),
+                    duration=0,
+                    connection_id=0,
+                    reason=reason,
+                )
+            )
+        except (errors.CallAlreadyDeclined, errors.CallAlreadyAccepted):
+            pass
+        self.call_ended()
+
+    def signalling_data_emitted_callback(self, data):
+        async def _():
+            await self.client.invoke(
+                functions.phone.SendSignalingData(
+                    peer=types.InputPhoneCall(id=self.call_id, access_hash=self.call_access_hash),
+                    data=bytes(data),
+                )
+            )
+        asyncio.ensure_future(_())
+
+    async def _initiate_encrypted_call(self) -> None:
+        await self.client.invoke(functions.help.GetConfig())
+        self.update_state('ESTABLISHED')
+
+        for handler in self.init_encrypted_handlers:
+            if asyncio.iscoroutinefunction(handler):
+                asyncio.ensure_future(handler(self))
+
+    def on_init_encrypted_call(self, func: callable) -> callable:
+        self.init_encrypted_handlers.append(func)
+        return func
+
+
+class OutgoingCall(Call):
+    """Outgoing call handler"""
+    is_outgoing = True
+
+    def __init__(self, client: Client, bridge: 'TelegramTextBridge', user_id: Union[int, str]):
+        super().__init__(client, bridge)
+        self.user_id = user_id
+
+    async def request(self):
+        self.update_state('REQUESTING')
+
+        self.peer = await self.client.resolve_peer(self.user_id)
+        
+        # Store caller info (it's actually the callee for outgoing)
+        self.caller_id = self.user_id
+
+        await self.get_dhc()
+        self.a = randint(2, self.dhc.p - 1)
+        self.g_a = pow(self.dhc.g, self.a, self.dhc.p)
+        self.g_a_hash = hashlib.sha256(i2b(self.g_a)).digest()
+
+        self.call = (
+            await self.client.invoke(
+                functions.phone.RequestCall(
+                    user_id=self.peer,
+                    random_id=randint(0, 0x7FFFFFFF - 1),
+                    g_a_hash=self.g_a_hash,
+                    protocol=self.get_protocol(),
+                )
+            )
+        ).phone_call
+
+        self.update_state('WAITING')
+
+    async def process_update(self, _, update, users, chats) -> None:
+        await super().process_update(_, update, users, chats)
+
+        if isinstance(self.call, types.PhoneCallAccepted) and not self.auth_key:
+            await self.call_accepted()
+            raise StopPropagation
+
+        raise ContinuePropagation
+
+    async def call_accepted(self) -> None:
+        self.update_state('EXCHANGING_KEYS')
+
+        await self.get_dhc()
+        self.g_b = b2i(self.call.g_b)
+        self.check_g(self.g_b, self.dhc.p)
+        self.auth_key = pow(self.g_b, self.a, self.dhc.p)
+        self.key_fingerprint = calc_fingerprint(self.auth_key_bytes)
+
+        self.call = (
+            await self.client.invoke(
+                functions.phone.ConfirmCall(
+                    key_fingerprint=self.key_fingerprint,
+                    peer=types.InputPhoneCall(id=self.call_id, access_hash=self.call_access_hash),
+                    g_a=i2b(self.g_a),
+                    protocol=self.get_protocol(),
+                )
+            )
+        ).phone_call
+
+        await self._initiate_encrypted_call()
+        await self._start_native_call()
+
+    async def _start_native_call(self):
+        """Start the native tgcalls instance"""
+        if not TGCALLS_AVAILABLE:
+            return
+            
+        self.native_instance = tgcalls.NativeInstance()
+        self.native_instance.setSignalingDataEmittedCallback(self.signalling_data_emitted_callback)
+        
+        connections = self.call.connections if hasattr(self.call, 'connections') else []
+        rtc_servers = [
+            tgcalls.RtcServer(c.ip, c.ipv6, c.port, c.username, c.password, c.turn, c.stun) 
+            for c in connections
+        ]
+        
+        self.native_instance.startCall(
+            rtc_servers, 
+            [x for x in self.auth_key_bytes], 
+            self.is_outgoing,
+            ""  # log path
+        )
+
+
+class IncomingCall(Call):
+    """Incoming call handler"""
+    is_outgoing = False
+
+    def __init__(self, call: types.PhoneCallRequested, client: Client, bridge: 'TelegramTextBridge'):
+        super().__init__(client, bridge)
+        self.call_accepted_handlers = []
+        self.update_state('WAITING_INCOMING')
+        self.call = call
+        self.call_access_hash = call.access_hash
+        
+        # Store caller info
+        self.caller_id = call.admin_id
+
+    async def process_update(self, _, update, users, chats):
+        await super().process_update(_, update, users, chats)
+        if isinstance(self.call, types.PhoneCall) and not self.auth_key:
+            await self.call_accepted()
+            raise StopPropagation
+        raise ContinuePropagation
+
+    async def accept(self) -> bool:
+        self.update_state('EXCHANGING_KEYS')
+
+        if not self.call:
+            self.call_failed()
+            raise RuntimeError('call is not set')
+
+        if isinstance(self.call, types.PhoneCallDiscarded):
+            print('Call is already discarded', file=sys.stderr)
+            self.call_discarded()
+            return False
+
+        await self.get_dhc()
+        self.b = randint(2, self.dhc.p - 1)
+        self.g_b = pow(self.dhc.g, self.b, self.dhc.p)
+        self.g_a_hash = self.call.g_a_hash
+
+        try:
+            self.call = (
+                await self.client.invoke(
+                    functions.phone.AcceptCall(
+                        peer=types.InputPhoneCall(id=self.call_id, access_hash=self.call_access_hash),
+                        g_b=i2b(self.g_b),
+                        protocol=self.get_protocol(),
+                    )
+                )
+            ).phone_call
+        except Exception as e:
+            print(f"Error accepting call: {e}", file=sys.stderr)
+            await self.discard_call()
+            self.stop()
+            self.call_discarded()
+            return False
+
+        return True
+
+    async def call_accepted(self) -> None:
+        if not self.call.g_a_or_b:
+            print('g_a is null', file=sys.stderr)
+            self.call_failed()
+            return
+
+        if self.g_a_hash != hashlib.sha256(self.call.g_a_or_b).digest():
+            print('g_a_hash doesn\'t match', file=sys.stderr)
+            self.call_failed()
+            return
+
+        self.g_a = b2i(self.call.g_a_or_b)
+        self.check_g(self.g_a, self.dhc.p)
+        self.auth_key = pow(self.g_a, self.b, self.dhc.p)
+        self.key_fingerprint = calc_fingerprint(self.auth_key_bytes)
+
+        if self.key_fingerprint != self.call.key_fingerprint:
+            print('fingerprints don\'t match', file=sys.stderr)
+            self.call_failed()
+            return
+
+        await self._initiate_encrypted_call()
+        await self._start_native_call()
+
+    async def _start_native_call(self):
+        """Start the native tgcalls instance"""
+        if not TGCALLS_AVAILABLE:
+            return
+            
+        self.native_instance = tgcalls.NativeInstance()
+        self.native_instance.setSignalingDataEmittedCallback(self.signalling_data_emitted_callback)
+        
+        connections = self.call.connections if hasattr(self.call, 'connections') else []
+        rtc_servers = [
+            tgcalls.RtcServer(c.ip, c.ipv6, c.port, c.username, c.password, c.turn, c.stun) 
+            for c in connections
+        ]
+        
+        self.native_instance.startCall(
+            rtc_servers, 
+            [x for x in self.auth_key_bytes], 
+            self.is_outgoing,
+            ""  # log path
+        )
+
+
+# =====================================================
+# Main Bridge Class
+# =====================================================
 
 class TelegramTextBridge:
     def __init__(self, api_id: int, api_hash: str, session_path: str, allowed_users: list[int] = None):
@@ -24,6 +500,13 @@ class TelegramTextBridge:
         self._shutdown_event = asyncio.Event()
         # Track active live locations by (user_id, message_id) to detect stops
         self._active_live_locations: dict[tuple[int, int], dict] = {}
+        
+        # Phone calls
+        self._active_calls: dict[int, Call] = {}  # call_id -> Call
+        self._auto_answer = os.environ.get("AUTO_ANSWER_CALLS", "false").lower() == "true"
+        
+        # Voice service client
+        self.voice_client = VoiceServiceClient()
         
         self.app = Client(
             self.session_name,
@@ -40,6 +523,91 @@ class TelegramTextBridge:
         @self.app.on_edited_message(filters.private & ~filters.me)
         async def edited_message_handler(client: Client, message: Message):
             await self._handle_edited_message(message)
+        
+        # Raw handler for phone calls
+        self.app.add_handler(RawUpdateHandler(self._handle_raw_update), -1)
+    
+    def _remove_call(self, call: Call):
+        """Remove a call from active calls"""
+        if call.call_id in self._active_calls:
+            del self._active_calls[call.call_id]
+    
+    async def _handle_raw_update(self, client: Client, update, users, chats):
+        """Handle raw updates for phone calls"""
+        # Forward signaling data to active calls
+        if isinstance(update, types.UpdatePhoneCallSignalingData):
+            for call in self._active_calls.values():
+                if call.native_instance:
+                    call.native_instance.receiveSignalingData([x for x in update.data])
+        
+        # Handle phone call updates
+        if isinstance(update, types.UpdatePhoneCall):
+            phone_call = update.phone_call
+            
+            # New incoming call
+            if isinstance(phone_call, types.PhoneCallRequested):
+                # Get caller info
+                caller_id = phone_call.admin_id
+                caller_info = users.get(caller_id, {})
+                caller_username = getattr(caller_info, 'username', None)
+                caller_name = getattr(caller_info, 'first_name', str(caller_id))
+                
+                # Check if caller is allowed
+                if not self.is_user_allowed(caller_id):
+                    self.emit_event("call.rejected", {
+                        "call_id": phone_call.id,
+                        "caller_id": caller_id,
+                        "reason": "not_allowed"
+                    })
+                    raise ContinuePropagation
+                
+                # Create incoming call handler
+                incoming_call = IncomingCall(phone_call, client, self)
+                incoming_call.caller_id = caller_id
+                incoming_call.caller_username = caller_username
+                incoming_call.caller_name = caller_name
+                
+                # Register the call's update handler
+                client.add_handler(RawUpdateHandler(incoming_call.process_update), -1)
+                
+                # Track the call
+                self._active_calls[phone_call.id] = incoming_call
+                
+                # Emit incoming call event
+                self.emit_event("call.incoming", {
+                    "call_id": phone_call.id,
+                    "caller_id": caller_id,
+                    "caller_username": caller_username,
+                    "caller_name": caller_name,
+                    "auto_answer": self._auto_answer,
+                })
+                
+                # Auto-answer if configured
+                if self._auto_answer:
+                    asyncio.create_task(self._auto_answer_call(incoming_call))
+            
+            # Forward to active call handlers
+            for call_id, call in list(self._active_calls.items()):
+                if hasattr(call, 'call') and call.call and call.call.id == phone_call.id:
+                    # The call's own handler will process this
+                    pass
+        
+        raise ContinuePropagation
+    
+    async def _auto_answer_call(self, call: IncomingCall):
+        """Auto-answer an incoming call"""
+        try:
+            await asyncio.sleep(0.5)  # Brief delay
+            await call.accept()
+            self.emit_event("call.answered", {
+                "call_id": call.call_id,
+                "caller_id": call.caller_id,
+            })
+        except Exception as e:
+            self.emit_event("call.error", {
+                "call_id": call.call_id,
+                "error": str(e),
+            })
         
     def emit_event(self, event: str, data: dict):
         msg = json.dumps({"event": event, "data": data})
@@ -66,7 +634,12 @@ class TelegramTextBridge:
                     is_connected = self.app.is_connected
                 except:
                     pass
-                self.send_response(req_id, True, {"connected": is_connected})
+                self.send_response(req_id, True, {
+                    "connected": is_connected,
+                    "active_calls": len(self._active_calls),
+                    "auto_answer": self._auto_answer,
+                    "tgcalls_available": TGCALLS_AVAILABLE,
+                })
                 
             elif action == "send_text":
                 user_id = payload.get("user_id")
@@ -163,8 +736,101 @@ class TelegramTextBridge:
                     self.send_response(req_id, True)
                 except Exception as e:
                     self.send_response(req_id, False, error=str(e))
-                    
+            
+            # =====================================================
+            # Phone Call Actions
+            # =====================================================
+            
+            elif action == "call.start":
+                user_id = payload.get("user_id")
+                if not user_id:
+                    self.send_response(req_id, False, error="user_id required")
+                    return
+                try:
+                    call = OutgoingCall(self.app, self, user_id)
+                    self.app.add_handler(RawUpdateHandler(call.process_update), -1)
+                    await call.request()
+                    self._active_calls[call.call_id] = call
+                    self.send_response(req_id, True, {"call_id": call.call_id})
+                except Exception as e:
+                    self.send_response(req_id, False, error=str(e))
+            
+            elif action == "call.answer":
+                call_id = payload.get("call_id")
+                if not call_id:
+                    # Answer the first pending incoming call
+                    for cid, call in self._active_calls.items():
+                        if isinstance(call, IncomingCall) and call.state == "WAITING_INCOMING":
+                            call_id = cid
+                            break
+                
+                if not call_id or call_id not in self._active_calls:
+                    self.send_response(req_id, False, error="No pending incoming call")
+                    return
+                
+                call = self._active_calls[call_id]
+                if not isinstance(call, IncomingCall):
+                    self.send_response(req_id, False, error="Not an incoming call")
+                    return
+                
+                try:
+                    await call.accept()
+                    self.send_response(req_id, True, {"call_id": call_id})
+                except Exception as e:
+                    self.send_response(req_id, False, error=str(e))
+            
+            elif action == "call.hangup":
+                call_id = payload.get("call_id")
+                if not call_id:
+                    # Hangup the first active call
+                    if self._active_calls:
+                        call_id = next(iter(self._active_calls.keys()))
+                
+                if not call_id or call_id not in self._active_calls:
+                    self.send_response(req_id, False, error="No active call")
+                    return
+                
+                call = self._active_calls[call_id]
+                try:
+                    await call.discard_call()
+                    self.send_response(req_id, True, {"call_id": call_id})
+                except Exception as e:
+                    self.send_response(req_id, False, error=str(e))
+            
+            elif action == "call.status":
+                call_id = payload.get("call_id")
+                if call_id and call_id in self._active_calls:
+                    call = self._active_calls[call_id]
+                    self.send_response(req_id, True, {
+                        "call_id": call_id,
+                        "state": call.state,
+                        "caller_id": call.caller_id,
+                        "is_outgoing": call.is_outgoing,
+                    })
+                else:
+                    # Return all active calls
+                    calls_info = []
+                    for cid, call in self._active_calls.items():
+                        calls_info.append({
+                            "call_id": cid,
+                            "state": call.state,
+                            "caller_id": call.caller_id,
+                            "is_outgoing": call.is_outgoing,
+                        })
+                    self.send_response(req_id, True, {"calls": calls_info})
+            
+            elif action == "call.set_auto_answer":
+                self._auto_answer = payload.get("enabled", False)
+                self.send_response(req_id, True, {"auto_answer": self._auto_answer})
+            
             elif action == "shutdown":
+                # Hangup all calls first
+                for call in list(self._active_calls.values()):
+                    try:
+                        await call.discard_call()
+                    except:
+                        pass
+                
                 self.running = False
                 self._shutdown_event.set()
                 self.send_response(req_id, True)
@@ -362,7 +1028,13 @@ class TelegramTextBridge:
         try:
             await self.app.start()
             me = await self.app.get_me()
-            self.emit_event("ready", {"user_id": me.id, "username": me.username, "name": me.first_name})
+            self.emit_event("ready", {
+                "user_id": me.id, 
+                "username": me.username, 
+                "name": me.first_name,
+                "tgcalls_available": TGCALLS_AVAILABLE,
+                "auto_answer": self._auto_answer,
+            })
             
             reader_task = asyncio.create_task(self.stdin_reader())
             
@@ -379,6 +1051,13 @@ class TelegramTextBridge:
             self.emit_event("error", {"message": str(e), "fatal": True})
             raise
         finally:
+            # Cleanup calls
+            for call in list(self._active_calls.values()):
+                try:
+                    await call.discard_call()
+                except:
+                    pass
+            
             try:
                 await self.app.stop()
             except:
