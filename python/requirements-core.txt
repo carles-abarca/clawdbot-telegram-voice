@@ -1,0 +1,12 @@
+# Core requirements for telegram-userbot bridge + voice service
+# Python 3.10+
+
+# Telegram MTProto client
+pyrogram>=2.0.0
+TgCrypto>=1.2.0
+
+# Audio processing
+pydub>=0.25.0
+
+# Async utilities
+aiofiles>=23.0.0

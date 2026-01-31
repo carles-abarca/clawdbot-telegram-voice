@@ -1,0 +1,13 @@
+# Requirements for Voice Chat streaming service
+# Python 3.10+
+# NOTE: Uses Hydrogram instead of Pyrogram due to py-tgcalls compatibility
+
+# Telegram MTProto client (Hydrogram - modern Pyrogram fork)
+hydrogram>=0.2.0
+TgCrypto>=1.2.0
+
+# Voice Chat streaming
+py-tgcalls>=2.2.0
+
+# Audio processing
+numpy>=1.24.0

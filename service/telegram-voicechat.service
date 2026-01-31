@@ -1,0 +1,25 @@
+[Unit]
+Description=Telegram VoiceChat Streaming Service
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+Environment=PATH=/home/%i/jarvis/dev/repos/tgcalls-env/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/home/%i/jarvis/dev/repos/clawdbot-telegram-userbot/service
+ExecStart=/home/%i/jarvis/dev/repos/tgcalls-env/bin/python telegram-voicechat-service.py
+Restart=on-failure
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telegram-voicechat
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
