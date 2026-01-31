@@ -19,19 +19,44 @@ let queueFunctionsLoaded = false;
 async function loadQueueFunctions() {
   if (queueFunctionsLoaded) return;
   try {
-    // Use require for CommonJS compatibility
-    const { createRequire } = await import("module");
-    const require = createRequire(import.meta.url);
-    const queueModule = require("clawdbot/dist/auto-reply/reply/queue.js");
-    enqueueFollowupRun = queueModule.enqueueFollowupRun;
-    scheduleFollowupDrain = queueModule.scheduleFollowupDrain;
-    console.log(`[telegram-userbot] Queue functions loaded successfully`);
+    // Import queue module using absolute path (bypasses exports restrictions)
+    // This allows us to properly queue messages with originating channel info
+    const clawdbotPath = await findClawdbotPath();
+    if (clawdbotPath) {
+      const queuePath = `${clawdbotPath}/dist/auto-reply/reply/queue.js`;
+      const queueModule = await import(queuePath);
+      enqueueFollowupRun = queueModule.enqueueFollowupRun;
+      scheduleFollowupDrain = queueModule.scheduleFollowupDrain;
+      console.log(`[telegram-userbot] Queue functions loaded successfully from ${queuePath}`);
+    } else {
+      throw new Error("Could not find clawdbot installation path");
+    }
     queueFunctionsLoaded = true;
   } catch (err) {
     // Queue functions not available, will fall back to system events
     console.log(`[telegram-userbot] Queue functions not available (fallback to system events): ${err}`);
     queueFunctionsLoaded = true;
   }
+}
+
+async function findClawdbotPath(): Promise<string | null> {
+  // Try common installation paths
+  const paths = [
+    // Global npm installations (nvm)
+    `${process.env.HOME}/.nvm/versions/node/${process.version}/lib/node_modules/clawdbot`,
+    // Global npm without nvm
+    "/usr/local/lib/node_modules/clawdbot",
+    "/usr/lib/node_modules/clawdbot",
+    // Try to resolve from the plugin's node_modules (symlinked)
+  ];
+  
+  const { existsSync } = await import("fs");
+  for (const p of paths) {
+    if (existsSync(p)) {
+      return p;
+    }
+  }
+  return null;
 }
 
 export type MonitorOptions = {
