@@ -35,6 +35,9 @@ You: 🎤 "Jarvis, what's the weather like?"
 Bot: 🔊 [Voice note response in your detected language]
 ```
 
+**Variant detection:** Whisper may transcribe "Jarvis" differently depending on the language context. The plugin automatically recognizes common variants:
+- `jarvis`, `xervis` (Catalan), `charvis` (Spanish J), `yarvis`, `gervis`, `jarbis`
+
 When your voice note doesn't start with the bot name, you get transcription + translation:
 
 ```
@@ -42,12 +45,16 @@ You: 🎤 "Estamos trabajando en el proyecto..."
 Bot: 📝 Transcripció: "Estamos trabajando en el proyecto..."
 ```
 
+**TTS cleanup:** Voice responses automatically strip markdown formatting, emojis, and special characters for natural-sounding audio. A small audio padding is added to prevent cutoff at the end.
+
 ## 📋 Requirements
 
 - Clawdbot >= 2026.1.0
-- Python 3.10+ with:
+- **Python 3.10** (required for tgcalls compatibility)
+- Python packages:
   - Pyrogram (Telegram MTProto)
   - faster-whisper (STT)
+  - tgcalls + pytgcalls (P2P voice calls - prepared for future use)
 - [Piper TTS](https://github.com/rhasspy/piper) binary + voice models
 - ffmpeg with libopus (for OGG conversion)
 - Telegram API credentials from [my.telegram.org](https://my.telegram.org)

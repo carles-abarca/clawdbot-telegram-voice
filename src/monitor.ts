@@ -16,6 +16,12 @@ export type MonitorOptions = {
   accountId: string;
   abortSignal?: AbortSignal;
   statusSink?: (patch: { lastInboundAt?: number; lastOutboundAt?: number }) => void;
+  log?: {
+    info: (msg: string) => void;
+    warn: (msg: string) => void;
+    error: (msg: string) => void;
+    debug: (msg: string) => void;
+  };
 };
 
 interface IncomingMessage {
@@ -34,24 +40,41 @@ interface IncomingMessage {
 }
 
 export async function monitorTelegramUserbot(opts: MonitorOptions): Promise<void> {
-  const { bridge, config, accountId, statusSink } = opts;
-  const core = getTelegramUserbotRuntime();
-  const cfg = core.config.loadConfig();
+  const { bridge, config, accountId, statusSink, log } = opts;
   
-  const logger = core.logging.getChildLogger({ module: "telegram-userbot" });
-  const logVerbose = (message: string) => {
-    if (core.logging.shouldLogVerbose()) {
-      logger.debug(message);
-    }
+  // Use passed logger or fallback to console
+  const logger = log ?? {
+    info: (msg: string) => console.log(`[telegram-userbot] ${msg}`),
+    warn: (msg: string) => console.warn(`[telegram-userbot] ${msg}`),
+    error: (msg: string) => console.error(`[telegram-userbot] ${msg}`),
+    debug: (msg: string) => console.debug(`[telegram-userbot] ${msg}`),
   };
+  
+  const logVerbose = (message: string) => {
+    logger.debug(message);
+  };
+  
+  // Get runtime - if not available, we can't process messages
+  let core: ReturnType<typeof getTelegramUserbotRuntime>;
+  try {
+    core = getTelegramUserbotRuntime();
+  } catch (err) {
+    logger.error(`Runtime not available: ${err}`);
+    logger.error("Cannot start monitor without runtime - check plugin initialization");
+    return;
+  }
+  
+  const cfg = core.config.loadConfig();
 
   // Get voice service client
+  logger.info("Checking voice service availability...");
   const voiceClient = getVoiceClient();
   let voiceServiceAvailable = false;
   
   // Check if voice service is available
   try {
     voiceServiceAvailable = await voiceClient.isAvailable();
+    logger.info(`Voice service check result: ${voiceServiceAvailable}`);
     if (voiceServiceAvailable) {
       const status = await voiceClient.getStatus();
       logger.info(`Voice service connected: ${status.service} v${status.version}`);
@@ -119,11 +142,24 @@ export async function monitorTelegramUserbot(opts: MonitorOptions): Promise<void
           }
         }
         
-        // Check if transcription starts with bot name
+        // Check if transcription starts with bot name (or common Whisper mishearings)
         const trimmedText = messageText.trim().toLowerCase();
-        if (trimmedText.startsWith(botName.toLowerCase())) {
+        const botNameLower = botName.toLowerCase();
+        // Common Whisper transcription variations of "Jarvis"
+        const botNameVariants = [
+          botNameLower,
+          "xervis",    // Catalan interpretation
+          "jarvi",     // Truncated
+          "jarbis",    // Mishearing
+          "charvis",   // Spanish J sound
+          "yarvis",    // Soft J
+          "gervis",    // German-ish
+        ];
+        
+        const matchedVariant = botNameVariants.find(variant => trimmedText.startsWith(variant));
+        if (matchedVariant) {
           wantsVoiceResponse = true;
-          logger.info(`Voice-to-voice mode activated (starts with "${botName}")`);
+          logger.info(`Voice-to-voice mode activated (matched "${matchedVariant}" for "${botName}")`);
         }
         
         // Check for language change request in response
@@ -361,8 +397,11 @@ export async function monitorTelegramUserbot(opts: MonitorOptions): Promise<void
             try {
               // Voice response if voice-to-voice mode and service available
               if (wantsVoiceResponse && voiceServiceAvailable) {
-                // Strip markdown formatting for TTS (bold, italic, code, links, etc.)
+                // Strip markdown formatting and emojis for TTS
                 const cleanText = text
+                  // Remove emojis
+                  .replace(/[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F000}-\u{1F02F}]|[\u{1F0A0}-\u{1F0FF}]|[\u{1F100}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1FA00}-\u{1FAFF}]/gu, "")
+                  // Markdown formatting
                   .replace(/\*\*(.+?)\*\*/g, "$1")     // **bold** -> bold
                   .replace(/\*(.+?)\*/g, "$1")         // *italic* -> italic
                   .replace(/__(.+?)__/g, "$1")         // __underline__ -> underline
@@ -374,7 +413,13 @@ export async function monitorTelegramUserbot(opts: MonitorOptions): Promise<void
                   .replace(/^#+\s+/gm, "")             // # headers -> remove #
                   .replace(/^\s*[-*+]\s+/gm, "")       // - bullets -> remove marker
                   .replace(/^\s*\d+\.\s+/gm, "")       // 1. numbered -> remove number
+                  // Clean up remaining artifacts
+                  .replace(/\*+/g, "")                 // Stray asterisks
+                  .replace(/_+/g, " ")                 // Stray underscores -> space
+                  .replace(/\|/g, ",")                 // Table pipes -> commas
+                  .replace(/---+/g, "")                // Horizontal rules
                   .replace(/\n{3,}/g, "\n\n")          // Multiple newlines -> double
+                  .replace(/\s{2,}/g, " ")             // Multiple spaces -> single
                   .trim();
                 
                 logger.info(`Generating voice response via service: ${cleanText.substring(0, 50)}...`);

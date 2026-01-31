@@ -252,6 +252,7 @@ export const telegramUserbotPlugin: ChannelPlugin<ResolvedTelegramUserbotAccount
         config,
         accountId: account.accountId,
         abortSignal: ctx.abortSignal,
+        log,
       });
     },
     stop: async () => {

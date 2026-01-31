@@ -142,9 +142,13 @@ export class VoiceClient {
   /**
    * Comprova si el servei està disponible
    */
-  async isAvailable(): Promise<boolean> {
+  async isAvailable(timeoutMs: number = 5000): Promise<boolean> {
     try {
+      // Use shorter timeout for availability check
+      const originalTimeout = this.timeout;
+      this.timeout = timeoutMs;
       const result = await this.health();
+      this.timeout = originalTimeout;
       return result.status === "ok";
     } catch {
       return false;
