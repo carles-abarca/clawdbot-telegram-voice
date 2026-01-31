@@ -156,6 +156,61 @@ export class VoiceClient {
   }
 
   /**
+   * Comprova la memòria disponible del sistema
+   * Returns { lowMemory: boolean, availableMB: number }
+   */
+  async checkMemory(): Promise<{ lowMemory: boolean; availableMB: number }> {
+    try {
+      const { execSync } = await import("child_process");
+      // Get available memory in KB from /proc/meminfo (Linux)
+      const memInfo = execSync("grep MemAvailable /proc/meminfo 2>/dev/null || echo 'MemAvailable: 999999999 kB'")
+        .toString();
+      const match = memInfo.match(/MemAvailable:\s*(\d+)/);
+      const availableKB = match ? parseInt(match[1], 10) : 999999999;
+      const availableMB = Math.floor(availableKB / 1024);
+      
+      // Consider low memory if less than 400MB available
+      const lowMemory = availableMB < 400;
+      
+      return { lowMemory, availableMB };
+    } catch {
+      // If we can't check, assume we're fine
+      return { lowMemory: false, availableMB: 9999 };
+    }
+  }
+
+  /**
+   * Reinicia el servei telegram-voice via systemd
+   */
+  async restartService(): Promise<boolean> {
+    try {
+      const { exec } = await import("child_process");
+      const { promisify } = await import("util");
+      const execAsync = promisify(exec);
+      
+      console.log("[voice-client] Restarting telegram-voice service...");
+      await execAsync("systemctl --user restart telegram-voice");
+      
+      // Wait for service to be available
+      let attempts = 0;
+      while (attempts < 10) {
+        await new Promise(r => setTimeout(r, 500));
+        if (await this.isAvailable(2000)) {
+          console.log("[voice-client] Service restarted successfully");
+          return true;
+        }
+        attempts++;
+      }
+      
+      console.error("[voice-client] Service restart timed out");
+      return false;
+    } catch (err) {
+      console.error(`[voice-client] Failed to restart service: ${err}`);
+      return false;
+    }
+  }
+
+  /**
    * Fa una crida JSON-RPC al servei
    */
   private async call<T>(method: string, params: Record<string, unknown>): Promise<T> {

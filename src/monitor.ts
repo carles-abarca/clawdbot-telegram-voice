@@ -11,6 +11,59 @@ import type { TelegramBridge } from "./telegram-bridge.js";
 import { getVoiceClient, type VoiceClient } from "./voice-client.js";
 import { storeVoiceContext, consumeVoiceContext, hasVoiceContext } from "./voice-context.js";
 
+/**
+ * Split text into chunks for TTS, respecting sentence boundaries
+ * to ensure natural-sounding audio segments
+ */
+function splitTextIntoChunks(text: string, maxChars: number): string[] {
+  if (text.length <= maxChars) {
+    return [text];
+  }
+  
+  const chunks: string[] = [];
+  let remaining = text;
+  
+  while (remaining.length > 0) {
+    if (remaining.length <= maxChars) {
+      chunks.push(remaining.trim());
+      break;
+    }
+    
+    // Try to find a sentence break (. ! ?) within the limit
+    let splitPoint = -1;
+    const searchRange = remaining.substring(0, maxChars);
+    
+    // Look for sentence endings
+    const sentenceEndings = ['. ', '! ', '? ', '.\n', '!\n', '?\n'];
+    for (const ending of sentenceEndings) {
+      const lastIndex = searchRange.lastIndexOf(ending);
+      if (lastIndex > splitPoint) {
+        splitPoint = lastIndex + ending.length - 1;
+      }
+    }
+    
+    // If no sentence break, try comma or semicolon
+    if (splitPoint < maxChars * 0.3) {
+      const commaIndex = searchRange.lastIndexOf(', ');
+      const semicolonIndex = searchRange.lastIndexOf('; ');
+      splitPoint = Math.max(splitPoint, commaIndex, semicolonIndex);
+      if (splitPoint > 0) splitPoint += 1;
+    }
+    
+    // If still no good break point, just split at max chars
+    if (splitPoint < maxChars * 0.3) {
+      // Try to split at a space
+      const spaceIndex = searchRange.lastIndexOf(' ');
+      splitPoint = spaceIndex > 0 ? spaceIndex : maxChars;
+    }
+    
+    chunks.push(remaining.substring(0, splitPoint).trim());
+    remaining = remaining.substring(splitPoint).trim();
+  }
+  
+  return chunks.filter(c => c.length > 0);
+}
+
 // Queue functions will be loaded dynamically at runtime
 let enqueueFollowupRun: ((key: string, run: any, settings: any) => boolean) | null = null;
 let scheduleFollowupDrain: ((key: string, runFollowup: (run: any) => Promise<void>) => void) | null = null;
@@ -489,30 +542,59 @@ export async function monitorTelegramUserbot(opts: MonitorOptions): Promise<void
                   .replace(/\s{2,}/g, " ")             // Multiple spaces -> single
                   .trim();
                 
-                logger.info(`Generating voice response via service: ${cleanText.substring(0, 50)}...`);
-                try {
-                  const audioResult = await voiceClient.synthesize(cleanText, userId);
+                // Split long text into chunks to avoid memory issues
+                const MAX_CHUNK_CHARS = 800;
+                const textChunks = splitTextIntoChunks(cleanText, MAX_CHUNK_CHARS);
+                
+                logger.info(`Generating voice response via service: ${textChunks.length} chunk(s), total ${cleanText.length} chars`);
+                
+                let allChunksSent = true;
+                for (let i = 0; i < textChunks.length; i++) {
+                  const chunk = textChunks[i];
+                  logger.info(`Processing chunk ${i + 1}/${textChunks.length}: ${chunk.substring(0, 40)}...`);
                   
-                  if (audioResult.error) {
-                    throw new Error(audioResult.error);
+                  try {
+                    // Check memory before synthesis
+                    const memCheck = await voiceClient.checkMemory?.();
+                    if (memCheck?.lowMemory) {
+                      logger.warn(`Low memory detected (${memCheck.availableMB}MB), restarting voice service...`);
+                      await voiceClient.restartService?.();
+                      await new Promise(r => setTimeout(r, 2000)); // Wait for restart
+                    }
+                    
+                    const audioResult = await voiceClient.synthesize(chunk, userId);
+                    
+                    if (audioResult.error) {
+                      throw new Error(audioResult.error);
+                    }
+                    
+                    logger.info(`Sending voice note chunk ${i + 1} to ${data.user_id}`);
+                    await bridge.request("send_voice", {
+                      user_id: data.user_id,
+                      audio_path: audioResult.audio_path,
+                    });
+                    statusSink?.({ lastOutboundAt: Date.now() });
+                    
+                    // Small delay between chunks
+                    if (i < textChunks.length - 1) {
+                      await new Promise(r => setTimeout(r, 500));
+                    }
+                  } catch (chunkErr) {
+                    logger.error(`TTS failed for chunk ${i + 1}: ${chunkErr}`);
+                    allChunksSent = false;
+                    // Send remaining as text
+                    const remainingText = textChunks.slice(i).join(" ");
+                    await bridge.request("send_text", {
+                      user_id: data.user_id,
+                      text: remainingText,
+                    });
+                    break;
                   }
-                  
-                  logger.info(`Sending voice note to ${data.user_id}`);
-                  await bridge.request("send_voice", {
-                    user_id: data.user_id,
-                    audio_path: audioResult.audio_path,
-                  });
-                  sentMessage = true;
-                  statusSink?.({ lastOutboundAt: Date.now() });
-                  logger.info(`Voice sent successfully to ${senderId}`);
-                } catch (ttsErr) {
-                  logger.error(`TTS failed, falling back to text: ${ttsErr}`);
-                  await bridge.request("send_text", {
-                    user_id: data.user_id,
-                    text: text,
-                  });
-                  sentMessage = true;
-                  statusSink?.({ lastOutboundAt: Date.now() });
+                }
+                
+                sentMessage = true;
+                if (allChunksSent) {
+                  logger.info(`All ${textChunks.length} voice chunks sent successfully to ${senderId}`);
                 }
               } else {
                 // Regular text response
