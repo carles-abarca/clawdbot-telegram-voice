@@ -22,6 +22,8 @@ class TelegramTextBridge:
         self.allowed_users = allowed_users or []
         self.running = True
         self._shutdown_event = asyncio.Event()
+        # Track active live locations by (user_id, message_id) to detect stops
+        self._active_live_locations: dict[tuple[int, int], dict] = {}
         
         self.app = Client(
             self.session_name,
@@ -202,7 +204,24 @@ class TelegramTextBridge:
         if not user_id or not self.is_user_allowed(user_id):
             return
         
-        # Only process location updates
+        key = (user_id, message.id)
+        
+        # Check if this message HAD a live location but now doesn't
+        if not message.location and key in self._active_live_locations:
+            # Live location was stopped!
+            last_data = self._active_live_locations.pop(key)
+            event_data = {
+                "user_id": user_id,
+                "username": message.from_user.username,
+                "first_name": message.from_user.first_name,
+                "message_id": message.id,
+                "last_location": last_data.get("location"),
+                "text": "🛑 Live location stopped",
+            }
+            self.emit_event("message.location_stop", event_data)
+            return
+        
+        # Process location updates
         if message.location:
             loc = message.location
             live_period = getattr(loc, 'live_period', None)
@@ -222,6 +241,10 @@ class TelegramTextBridge:
                 },
                 "text": f"🛰 Live location update: {loc.latitude}, {loc.longitude}",
             }
+            
+            # Track this as an active live location
+            self._active_live_locations[key] = event_data
+            
             self.emit_event("message.location_update", event_data)
                 
     async def _handle_message(self, message: Message):
