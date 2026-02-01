@@ -84,18 +84,23 @@ def calc_fingerprint(key: bytes) -> int:
 
 
 # =====================================================
-# Voice Service JSON-RPC Client
+# Voice Service JSON-RPC Client (length-prefixed protocol)
 # =====================================================
 
 class VoiceServiceClient:
-    """Client to communicate with voice-service via Unix socket"""
+    """Client to communicate with telegram-transcriptor-service via Unix socket
+    
+    Uses length-prefixed JSON-RPC protocol:
+    - Send: 4 bytes (big-endian length) + JSON payload
+    - Recv: 4 bytes (big-endian length) + JSON payload
+    """
     
     def __init__(self, socket_path: str = "/run/user/1000/tts-stt.sock"):
         self.socket_path = socket_path
         self._request_id = 0
         
     async def call(self, method: str, params: dict = None) -> dict:
-        """Make a JSON-RPC call to voice-service"""
+        """Make a JSON-RPC call to transcriptor service"""
         try:
             reader, writer = await asyncio.open_unix_connection(self.socket_path)
             
@@ -107,37 +112,63 @@ class VoiceServiceClient:
                 "params": params or {}
             }
             
-            data = json.dumps(request) + "\n"
-            writer.write(data.encode())
+            # Length-prefixed protocol: 4 bytes big-endian length + JSON
+            data = json.dumps(request).encode()
+            writer.write(len(data).to_bytes(4, 'big'))
+            writer.write(data)
             await writer.drain()
             
-            response_line = await asyncio.wait_for(reader.readline(), timeout=30.0)
+            # Read response with same protocol
+            length_bytes = await asyncio.wait_for(reader.readexactly(4), timeout=30.0)
+            length = int.from_bytes(length_bytes, 'big')
+            response_data = await asyncio.wait_for(reader.readexactly(length), timeout=30.0)
+            
             writer.close()
             await writer.wait_closed()
             
-            if response_line:
-                return json.loads(response_line.decode())
-            return {"error": "Empty response"}
+            return json.loads(response_data.decode())
             
         except Exception as e:
             return {"error": str(e)}
     
-    async def stt(self, audio_path: str) -> str:
-        """Speech to text"""
-        result = await self.call("stt", {"audio_path": audio_path})
+    async def transcribe(self, audio_path: str, user_id: str = None, language: str = None, **kwargs) -> dict:
+        """Speech to text via Whisper
+        
+        Extra kwargs (like conversation_id) are ignored but accepted for compatibility.
+        """
+        params = {"audio_path": audio_path}
+        if user_id:
+            params["user_id"] = user_id
+        if language:
+            params["language"] = language
+        result = await self.call("transcribe", params)
         if "result" in result:
-            return result["result"].get("text", "")
-        return ""
+            return result["result"]
+        return {"error": result.get("error", "Unknown error")}
     
-    async def tts(self, text: str, output_path: str = None) -> str:
-        """Text to speech, returns audio path"""
+    async def synthesize(self, text: str, user_id: str = None, language: str = None, output_path: str = None, **kwargs) -> dict:
+        """Text to speech via Piper
+        
+        Extra kwargs (like conversation_id) are ignored but accepted for compatibility.
+        """
         params = {"text": text}
+        if user_id:
+            params["user_id"] = user_id
+        if language:
+            params["language"] = language
         if output_path:
             params["output_path"] = output_path
-        result = await self.call("tts", params)
+        result = await self.call("synthesize", params)
         if "result" in result:
-            return result["result"].get("audio_path", "")
-        return ""
+            return result["result"]
+        return {"error": result.get("error", "Unknown error")}
+    
+    async def health(self) -> dict:
+        """Check service health"""
+        result = await self.call("health", {})
+        if "result" in result:
+            return result["result"]
+        return {"status": "error", "error": result.get("error", "Unknown error")}
 
 
 # =====================================================

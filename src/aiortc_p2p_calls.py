@@ -808,13 +808,17 @@ class AiortcP2PCall:
 
     @staticmethod
     def _get_protocol():
-        """Get Telegram call protocol"""
+        """Get Telegram call protocol
+        
+        library_versions must match official tgcalls versions that Telegram recognizes.
+        Using '3.0.0' for compatibility with modern Telegram clients.
+        """
         return types.PhoneCallProtocol(
             min_layer=92,
             max_layer=92,
             udp_p2p=True,
             udp_reflector=True,
-            library_versions=['aiortc-1.0.0']
+            library_versions=['3.0.0']  # Must match official tgcalls version
         )
 
     async def _emit_event(self, event_type: str, params: Dict):
