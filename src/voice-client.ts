@@ -46,6 +46,51 @@ export interface HealthResult {
   timestamp: string;
 }
 
+export interface CallStartResult {
+  status: string;
+  call_id?: number;
+  error?: string;
+}
+
+export interface CallHangupResult {
+  status: string;
+  duration?: number;
+  error?: string;
+}
+
+export interface CallStatusResult {
+  active: boolean;
+  state: string;
+  call_id?: number;
+  user_id?: number;
+  duration?: number;
+  error?: string;
+}
+
+export interface CallSpeakResult {
+  status: string;
+  audio_path?: string;
+  error?: string;
+}
+
+export interface CallPlayResult {
+  status: string;
+  error?: string;
+}
+
+export interface CallEvent {
+  type: "call.ringing" | "call.connected" | "call.speech" | "call.ended";
+  params: {
+    call_id?: string;
+    user_id?: number;
+    text?: string;
+    language?: string;
+    audio_path?: string;
+    duration?: number;
+    reason?: string;
+  };
+}
+
 interface JSONRPCRequest {
   jsonrpc: "2.0";
   method: string;
@@ -60,6 +105,14 @@ interface JSONRPCResponse {
   id: number;
 }
 
+interface JSONRPCNotification {
+  jsonrpc: "2.0";
+  method: string;
+  params: Record<string, unknown>;
+}
+
+type CallEventListener = (event: CallEvent) => void | Promise<void>;
+
 export class VoiceClient {
   private socketPath: string;
   private tcpHost: string;
@@ -67,6 +120,8 @@ export class VoiceClient {
   private transport: "unix" | "tcp";
   private requestId: number = 0;
   private timeout: number;
+  private eventListeners: CallEventListener[] = [];
+  private eventSocket: net.Socket | null = null;
 
   constructor(options?: { timeout?: number }) {
     this.timeout = options?.timeout ?? 120000; // 120s default (medium model + transcription can be slow)
@@ -153,6 +208,150 @@ export class VoiceClient {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Start a P2P call
+   */
+  async callStart(userId: number): Promise<CallStartResult> {
+    return this.call<CallStartResult>("call.start", {
+      user_id: userId,
+    });
+  }
+
+  /**
+   * Hang up the current call
+   */
+  async callHangup(): Promise<CallHangupResult> {
+    return this.call<CallHangupResult>("call.hangup", {});
+  }
+
+  /**
+   * Get current call status
+   */
+  async callStatus(): Promise<CallStatusResult> {
+    return this.call<CallStatusResult>("call.status", {});
+  }
+
+  /**
+   * Speak text in the current call (TTS + playback)
+   */
+  async callSpeak(text: string): Promise<CallSpeakResult> {
+    return this.call<CallSpeakResult>("call.speak", {
+      text,
+    });
+  }
+
+  /**
+   * Play audio file in the current call
+   */
+  async callPlay(audioPath: string): Promise<CallPlayResult> {
+    return this.call<CallPlayResult>("call.play", {
+      audio_path: audioPath,
+    });
+  }
+
+  /**
+   * Add a listener for call events
+   */
+  onCallEvent(listener: CallEventListener): void {
+    this.eventListeners.push(listener);
+    // Start event socket if not already running
+    if (!this.eventSocket) {
+      this.startEventListener();
+    }
+  }
+
+  /**
+   * Remove a call event listener
+   */
+  offCallEvent(listener: CallEventListener): void {
+    const index = this.eventListeners.indexOf(listener);
+    if (index !== -1) {
+      this.eventListeners.splice(index, 1);
+    }
+    // Stop event socket if no more listeners
+    if (this.eventListeners.length === 0 && this.eventSocket) {
+      this.eventSocket.destroy();
+      this.eventSocket = null;
+    }
+  }
+
+  /**
+   * Start listening for call events from the service
+   */
+  private startEventListener(): void {
+    if (this.eventSocket) {
+      return; // Already listening
+    }
+
+    const socket = this.transport === "unix"
+      ? net.createConnection(this.socketPath)
+      : net.createConnection(this.tcpPort, this.tcpHost);
+
+    this.eventSocket = socket;
+
+    let buffer = "";
+    let expectedLength: number | null = null;
+
+    socket.on("connect", () => {
+      console.log("[voice-client] Event listener connected");
+    });
+
+    socket.on("data", (chunk) => {
+      try {
+        // Handle length-prefixed JSON-RPC messages
+        if (expectedLength === null && chunk.length >= 4) {
+          expectedLength = chunk.readUInt32BE(0);
+          chunk = chunk.subarray(4);
+        }
+
+        buffer += chunk.toString();
+
+        // Try to parse complete messages
+        while (buffer.length > 0) {
+          try {
+            const message = JSON.parse(buffer) as JSONRPCNotification;
+            buffer = "";
+            expectedLength = null;
+
+            // Handle JSON-RPC notifications (events)
+            if (message.method && message.method.startsWith("call.")) {
+              const event: CallEvent = {
+                type: message.method as CallEvent["type"],
+                params: message.params as CallEvent["params"],
+              };
+
+              // Emit to all listeners
+              for (const listener of this.eventListeners) {
+                Promise.resolve(listener(event)).catch(err => {
+                  console.error(`[voice-client] Event listener error: ${err}`);
+                });
+              }
+            }
+          } catch {
+            // Incomplete JSON, wait for more data
+            break;
+          }
+        }
+      } catch (err) {
+        console.error(`[voice-client] Event parsing error: ${err}`);
+      }
+    });
+
+    socket.on("error", (err) => {
+      console.error(`[voice-client] Event socket error: ${err}`);
+    });
+
+    socket.on("close", () => {
+      console.log("[voice-client] Event listener disconnected");
+      this.eventSocket = null;
+
+      // Reconnect if there are still listeners
+      if (this.eventListeners.length > 0) {
+        setTimeout(() => this.startEventListener(), 2000);
+      }
+    });
   }
 
   /**

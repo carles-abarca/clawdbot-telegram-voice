@@ -191,7 +191,7 @@ export async function monitorTelegramUserbot(opts: MonitorOptions): Promise<void
   logger.info("Checking voice service availability...");
   const voiceClient = getVoiceClient();
   let voiceServiceAvailable = false;
-  
+
   // Check if voice service is available
   try {
     voiceServiceAvailable = await voiceClient.isAvailable();
@@ -201,11 +201,164 @@ export async function monitorTelegramUserbot(opts: MonitorOptions): Promise<void
       logger.info(`Voice service connected: ${status.service} v${status.version}`);
       logger.info(`  Transport: ${status.transport} (${status.socket})`);
       logger.info(`  Languages: ${status.supported_languages.join(", ")}`);
+
+      // Check if P2P calls are available
+      const callStatus = await voiceClient.callStatus();
+      if (callStatus && !callStatus.error) {
+        logger.info(`P2P call service available (state: ${callStatus.state})`);
+      }
     } else {
       logger.warn("Voice service not available - voice features disabled");
     }
   } catch (err) {
     logger.warn(`Voice service check failed: ${err}`);
+  }
+
+  // Handler for P2P call events
+  if (voiceServiceAvailable) {
+    voiceClient.onCallEvent(async (event) => {
+      try {
+        logger.info(`Call event: ${event.type} - ${JSON.stringify(event.params)}`);
+
+        if (event.type === "call.connected") {
+          logger.info(`Call connected to user ${event.params.user_id}`);
+          // Optionally greet the user
+          // await voiceClient.callSpeak("Hello! How can I help you?");
+        } else if (event.type === "call.speech") {
+          // User spoke during call - process with Claude
+          const userId = String(event.params.user_id);
+          const userText = event.params.text || "";
+          const language = event.params.language || "ca";
+
+          logger.info(`User spoke in call: "${userText}" (lang=${language})`);
+
+          // Resolve agent route
+          const route = core.channel.routing.resolveAgentRoute({
+            cfg,
+            channel: "telegram-userbot",
+            accountId,
+            peer: {
+              kind: "dm",
+              id: userId,
+            },
+          });
+
+          // Format message envelope
+          const senderName = `User ${userId}`;
+          const messageId = `call_${event.params.call_id}_${Date.now()}`;
+          const storePath = core.channel.session.resolveStorePath(cfg.session?.store, {
+            agentId: route.agentId,
+          });
+          const envelopeOptions = core.channel.reply.resolveEnvelopeFormatOptions(cfg);
+          const previousTimestamp = core.channel.session.readSessionUpdatedAt({
+            storePath,
+            sessionKey: route.sessionKey,
+          });
+          const timestamp = Date.now();
+          const bodyWithMeta = `${userText}\n[telegram-userbot call message_id: ${messageId}]`;
+          const body = core.channel.reply.formatAgentEnvelope({
+            channel: "TelegramUserbot",
+            from: senderName,
+            timestamp,
+            previousTimestamp,
+            envelope: envelopeOptions,
+            body: bodyWithMeta,
+          });
+
+          // Build context payload
+          const ctxPayload = {
+            Body: body,
+            BodyForAgent: body,
+            RawBody: userText,
+            CommandBody: userText,
+            BodyForCommands: userText,
+            From: `telegram-userbot:${userId}`,
+            To: `telegram-userbot:${userId}`,
+            SessionKey: route.sessionKey,
+            AccountId: route.accountId,
+            ChatType: "direct" as const,
+            ConversationLabel: senderName,
+            SenderName: senderName,
+            SenderId: userId,
+            Provider: "telegram-userbot" as const,
+            Surface: "telegram-userbot" as const,
+            MessageSid: messageId,
+            Timestamp: timestamp,
+            OriginatingChannel: "telegram-userbot" as const,
+            OriginatingTo: `telegram-userbot:${userId}`,
+            CommandAuthorized: true,
+          };
+
+          // Process with Claude and respond
+          try {
+            await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+              ctx: ctxPayload,
+              cfg,
+              dispatcherOptions: {
+                deliver: async (payload) => {
+                  let text = payload.text ?? "";
+                  if (!text.trim()) {
+                    return;
+                  }
+
+                  // Strip markdown and emojis for TTS
+                  const cleanText = text
+                    .replace(/[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F000}-\u{1F02F}]|[\u{1F0A0}-\u{1F0FF}]|[\u{1F100}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1FA00}-\u{1FAFF}]/gu, "")
+                    .replace(/\*\*(.+?)\*\*/g, "$1")
+                    .replace(/\*(.+?)\*/g, "$1")
+                    .replace(/__(.+?)__/g, "$1")
+                    .replace(/_(.+?)_/g, "$1")
+                    .replace(/~~(.+?)~~/g, "$1")
+                    .replace(/`{3}[\s\S]*?`{3}/g, "")
+                    .replace(/`(.+?)`/g, "$1")
+                    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+                    .replace(/^#+\s+/gm, "")
+                    .replace(/^\s*[-*+]\s+/gm, "")
+                    .replace(/^\s*\d+\.\s+/gm, "")
+                    .replace(/\*+/g, "")
+                    .replace(/_+/g, " ")
+                    .replace(/\|/g, ",")
+                    .replace(/---+/g, "")
+                    .replace(/\n{3,}/g, "\n\n")
+                    .replace(/\s{2,}/g, " ")
+                    .trim();
+
+                  logger.info(`Speaking response in call: "${cleanText.substring(0, 50)}..."`);
+
+                  // Speak the response in the call
+                  const result = await voiceClient.callSpeak(cleanText);
+                  if (result.error) {
+                    logger.error(`Call speak failed: ${result.error}`);
+                  } else {
+                    logger.info(`Response spoken in call successfully`);
+                  }
+
+                  statusSink?.({ lastOutboundAt: Date.now() });
+                },
+                onReplyStart: async () => {
+                  logger.debug("Processing call speech with Claude...");
+                },
+                onIdle: async () => {
+                  logger.debug("Call speech processing complete");
+                },
+              },
+            });
+          } catch (err) {
+            logger.error(`Failed to process call speech: ${err}`);
+          }
+        } else if (event.type === "call.ended") {
+          const duration = event.params.duration || 0;
+          const reason = event.params.reason || "unknown";
+          logger.info(`Call ended (duration: ${duration.toFixed(1)}s, reason: ${reason})`);
+        } else if (event.type === "call.ringing") {
+          logger.info(`Call ringing to user ${event.params.user_id}`);
+        }
+      } catch (err) {
+        logger.error(`Call event handler error: ${err}`);
+      }
+    });
+
+    logger.info("P2P call event handler registered");
   }
 
   // Handler for incoming messages
@@ -703,6 +856,15 @@ export async function monitorTelegramUserbot(opts: MonitorOptions): Promise<void
   bridge.removeListener("message:private", handleIncomingMessage);
   bridge.removeListener("message:voice", handleIncomingMessage);
   bridge.removeListener("message:media", handleIncomingMessage);
-  
+
+  // Stop call event listener if active
+  if (voiceServiceAvailable && voiceClient) {
+    // Remove all call event listeners
+    const listeners = (voiceClient as any).eventListeners || [];
+    for (const listener of listeners) {
+      voiceClient.offCallEvent(listener);
+    }
+  }
+
   logger.info("telegram-userbot: monitor stopped");
 }

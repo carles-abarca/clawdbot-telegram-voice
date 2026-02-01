@@ -3,6 +3,18 @@
 pyrogram>=2.0.0
 tgcrypto>=1.2.0
 
-# Futures (per trucades)
-# pytgcalls>=3.0.0
-# ntgcalls>=1.0.0
+# P2P Calls - WebRTC Stack
+aiortc>=1.9.0
+aiohttp>=3.9.0
+av>=12.0.0
+
+# Audio Processing
+pydub>=0.25.1
+numpy>=1.24.0
+
+# Voice Activity Detection
+webrtcvad>=2.0.10
+
+# Optional: Group calls (if needed later)
+# py-tgcalls>=2.2.10
+# ntgcalls>=2.0.7

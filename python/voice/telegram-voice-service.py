@@ -38,13 +38,20 @@ except ImportError:
     PYROGRAM_AVAILABLE = False
     logging.warning("Pyrogram not available - calls disabled")
 
-# tgcalls per WebRTC
+# aiortc for P2P calls (replaces tgcalls)
+try:
+    from aiortc_p2p_calls import AiortcP2PCall
+    AIORTC_AVAILABLE = True
+except ImportError:
+    AIORTC_AVAILABLE = False
+    logging.warning("aiortc not available - P2P calls disabled")
+
+# Legacy tgcalls (deprecated, using aiortc now)
 try:
     import tgcalls
     TGCALLS_AVAILABLE = True
 except ImportError:
     TGCALLS_AVAILABLE = False
-    logging.warning("tgcalls not available - calls disabled")
 
 # Configuració de logging
 logging.basicConfig(
@@ -1127,12 +1134,15 @@ class JSONRPCServer:
             "language.get": self._handle_get_language,
             "status": self._handle_status,
             "health": self._handle_health,
-            # Call methods
-            "call.accept": self._handle_call_accept,
-            "call.reject": self._handle_call_reject,
+            # P2P Call methods (aiortc)
+            "call.start": self._handle_call_start,
             "call.hangup": self._handle_call_hangup,
             "call.status": self._handle_call_status,
-            "call.start": self._handle_call_start,
+            "call.speak": self._handle_call_speak,
+            "call.play": self._handle_call_play,
+            # Legacy call methods (backward compatibility)
+            "call.accept": self._handle_call_accept,
+            "call.reject": self._handle_call_reject,
         }
         
         # Register for call events
@@ -1218,41 +1228,66 @@ class JSONRPCServer:
     
     async def _handle_status(self, params: Dict) -> Dict:
         status = await self.voice.get_status()
+        status['aiortc_available'] = AIORTC_AVAILABLE
         if self.call:
-            status['call'] = await self.call.status()
+            call_status = self.call.get_status()
+            status['call'] = call_status
         return status
     
     async def _handle_health(self, params: Dict) -> Dict:
         return {"status": "ok", "timestamp": datetime.now().isoformat()}
     
-    # Call handlers
-    async def _handle_call_accept(self, params: Dict) -> Dict:
-        if not self.call:
-            return {"error": "Call service not available"}
-        return await self.call.accept()
-    
-    async def _handle_call_reject(self, params: Dict) -> Dict:
-        if not self.call:
-            return {"error": "Call service not available"}
-        return await self.call.reject()
-    
-    async def _handle_call_hangup(self, params: Dict) -> Dict:
-        if not self.call:
-            return {"error": "Call service not available"}
-        return await self.call.hangup()
-    
-    async def _handle_call_status(self, params: Dict) -> Dict:
-        if not self.call:
-            return {"error": "Call service not available"}
-        return await self.call.status()
-    
+    # Call handlers (aiortc P2P)
     async def _handle_call_start(self, params: Dict) -> Dict:
+        """Start outgoing P2P call"""
         if not self.call:
             return {"error": "Call service not available"}
         user_id = params.get("user_id")
         if not user_id:
             raise ValueError("user_id required")
-        return await self.call.start_call(user_id)
+        # aiortc uses request_call instead of start_call
+        return await self.call.request_call(int(user_id))
+
+    async def _handle_call_hangup(self, params: Dict) -> Dict:
+        """Hang up active call"""
+        if not self.call:
+            return {"error": "Call service not available"}
+        return await self.call.hangup()
+
+    async def _handle_call_status(self, params: Dict) -> Dict:
+        """Get call status"""
+        if not self.call:
+            return {"error": "Call service not available", "active": False}
+        return self.call.get_status()
+
+    async def _handle_call_speak(self, params: Dict) -> Dict:
+        """Generate TTS and play in active call"""
+        if not self.call:
+            return {"error": "Call service not available"}
+        text = params.get("text")
+        if not text:
+            raise ValueError("text required")
+        return await self.call.speak_text(text)
+
+    async def _handle_call_play(self, params: Dict) -> Dict:
+        """Play audio file in active call"""
+        if not self.call:
+            return {"error": "Call service not available"}
+        audio_path = params.get("audio_path")
+        if not audio_path:
+            raise ValueError("audio_path required")
+        return await self.call.play_audio(audio_path)
+
+    # Legacy call handlers (deprecated - kept for backward compatibility)
+    async def _handle_call_accept(self, params: Dict) -> Dict:
+        """Legacy: Accept call (auto-answered in aiortc)"""
+        return {"status": "auto-answered", "note": "aiortc auto-accepts calls"}
+
+    async def _handle_call_reject(self, params: Dict) -> Dict:
+        """Legacy: Reject call (use hangup instead)"""
+        if self.call:
+            return await self.call.hangup()
+        return {"error": "No active call"}
     
     def _success_response(self, req_id, result) -> bytes:
         return json.dumps({
@@ -1382,7 +1417,8 @@ async def main():
     log.info(f"   Platform: {platform.system()}")
     log.info(f"   Transport: {TRANSPORT}")
     log.info(f"   Pyrogram: {'✅' if PYROGRAM_AVAILABLE else '❌'}")
-    log.info(f"   tgcalls: {'✅' if TGCALLS_AVAILABLE else '❌'}")
+    log.info(f"   aiortc: {'✅' if AIORTC_AVAILABLE else '❌'} (P2P calls)")
+    log.info(f"   tgcalls: {'✅' if TGCALLS_AVAILABLE else '❌'} (legacy)")
     
     # Carregar configuració
     config = load_config()
@@ -1390,19 +1426,56 @@ async def main():
     # Inicialitzar servei de veu
     voice_service = VoiceService(config)
     
-    # Inicialitzar servei de trucades (si disponible)
+    # Inicialitzar servei de trucades P2P amb aiortc
     call_service = None
-    if PYROGRAM_AVAILABLE and TGCALLS_AVAILABLE:
-        call_service = CallService(config, voice_service)
-        started = await call_service.start()
-        if started:
-            log.info("📞 Call service started")
+    rpc_server = None  # Will be initialized after call_service
+
+    if AIORTC_AVAILABLE and PYROGRAM_AVAILABLE:
+        telegram_config = config.get("telegram", {})
+        if telegram_config:
+            try:
+                # Create Pyrogram client
+                client = Client(
+                    str(SESSION_PATH),
+                    api_id=telegram_config.get("apiId"),
+                    api_hash=telegram_config.get("apiHash")
+                )
+
+                await client.start()
+                log.info("✅ Pyrogram client started for calls")
+
+                # Create placeholder for RPC server (will be set below)
+                rpc_server_ref = {'server': None}
+
+                # Create event handler for RPC server
+                async def handle_call_event(event_type, params):
+                    # Broadcast call events to JSON-RPC clients
+                    if rpc_server_ref['server']:
+                        await rpc_server_ref['server']._on_call_event(event_type, params)
+
+                # Create aiortc P2P call service
+                call_service = AiortcP2PCall(
+                    client=client,
+                    voice_service=voice_service,
+                    on_event=handle_call_event
+                )
+
+                log.info("📞 aiortc P2P call service initialized")
+
+            except Exception as e:
+                log.error(f"Failed to initialize call service: {e}", exc_info=True)
+                call_service = None
         else:
-            log.warning("📞 Call service not started (check config/session)")
-            call_service = None
-    
+            log.warning("📞 Call service disabled: missing telegram config")
+    elif not AIORTC_AVAILABLE:
+        log.warning("📞 Call service disabled: aiortc not installed (pip install aiortc)")
+    elif not PYROGRAM_AVAILABLE:
+        log.warning("📞 Call service disabled: pyrogram not available")
+
     # Crear servidor JSON-RPC
     rpc_server = JSONRPCServer(voice_service, call_service)
+    if call_service:
+        rpc_server_ref['server'] = rpc_server  # Set reference for event handler
     
     # Iniciar servidor segons plataforma
     if TRANSPORT == "unix":
@@ -1416,7 +1489,17 @@ async def main():
     async def shutdown_handler():
         log.info("👋 Shutting down...")
         if call_service:
-            await call_service.stop()
+            # Hangup any active calls
+            try:
+                await call_service.hangup()
+            except:
+                pass
+            # Stop client if it has one
+            if hasattr(call_service, 'client') and call_service.client:
+                try:
+                    await call_service.client.stop()
+                except:
+                    pass
         server.close()
         await server.wait_closed()
         if TRANSPORT == "unix" and os.path.exists(SOCKET_PATH):

@@ -20,13 +20,39 @@ from pyrogram.raw import functions, types
 from pyrogram.types import Message
 from pyrogram import errors
 
-# Try to import tgcalls for native audio handling
+# Try to import aiortc for P2P calls (preferred, stable)
+# Look in multiple locations for the module
+_AIORTC_SEARCH_PATHS = [
+    Path.home() / ".clawdbot" / "telegram-userbot",  # Production
+    Path(__file__).parent,  # Same directory as bridge
+    Path.home() / "jarvis" / "projects" / "clawdbot-telegram-userbot" / "src",  # Dev
+]
+for _p in _AIORTC_SEARCH_PATHS:
+    if _p.exists() and str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+try:
+    from aiortc_p2p_calls import AiortcP2PCall, AIORTC_AVAILABLE as _AIORTC_OK
+    AIORTC_AVAILABLE = _AIORTC_OK
+except ImportError:
+    AIORTC_AVAILABLE = False
+    print("WARNING: aiortc_p2p_calls not available", file=sys.stderr)
+
+# Legacy tgcalls (deprecated, crashes)
 try:
     import tgcalls
     TGCALLS_AVAILABLE = True
 except ImportError:
     TGCALLS_AVAILABLE = False
-    print("WARNING: tgcalls not available, call audio will not work", file=sys.stderr)
+
+# Prefer aiortc over tgcalls
+CALLS_AVAILABLE = AIORTC_AVAILABLE or TGCALLS_AVAILABLE
+if AIORTC_AVAILABLE:
+    print("INFO: Using aiortc for P2P calls (stable)", file=sys.stderr)
+elif TGCALLS_AVAILABLE:
+    print("WARNING: Using legacy tgcalls (may crash)", file=sys.stderr)
+else:
+    print("WARNING: No call library available", file=sys.stderr)
 
 
 # =====================================================
@@ -502,11 +528,14 @@ class TelegramTextBridge:
         self._active_live_locations: dict[tuple[int, int], dict] = {}
         
         # Phone calls
-        self._active_calls: dict[int, Call] = {}  # call_id -> Call
+        self._active_calls: dict[int, Call] = {}  # call_id -> Call (legacy)
         self._auto_answer = os.environ.get("AUTO_ANSWER_CALLS", "false").lower() == "true"
         
-        # Voice service client
+        # Voice service client (for STT/TTS)
         self.voice_client = VoiceServiceClient()
+        
+        # aiortc P2P call service (preferred)
+        self._aiortc_call: 'AiortcP2PCall' = None  # Will be initialized after app.start()
         
         self.app = Client(
             self.session_name,
@@ -608,6 +637,18 @@ class TelegramTextBridge:
                 "call_id": call.call_id,
                 "error": str(e),
             })
+        
+    async def _on_aiortc_event(self, event_type: str, params: dict):
+        """Handle events from aiortc P2P call service"""
+        # Map aiortc events to bridge events
+        event_map = {
+            "call.ringing": "call.ringing",
+            "call.connected": "call.connected",
+            "call.speech": "call.speech",
+            "call.ended": "call.ended",
+        }
+        bridge_event = event_map.get(event_type, event_type)
+        self.emit_event(bridge_event, params)
         
     def emit_event(self, event: str, data: dict):
         msg = json.dumps({"event": event, "data": data})
@@ -746,14 +787,29 @@ class TelegramTextBridge:
                 if not user_id:
                     self.send_response(req_id, False, error="user_id required")
                     return
-                try:
-                    call = OutgoingCall(self.app, self, user_id)
-                    self.app.add_handler(RawUpdateHandler(call.process_update), -1)
-                    await call.request()
-                    self._active_calls[call.call_id] = call
-                    self.send_response(req_id, True, {"call_id": call.call_id})
-                except Exception as e:
-                    self.send_response(req_id, False, error=str(e))
+                
+                # Use aiortc if available (preferred)
+                if self._aiortc_call:
+                    try:
+                        result = await self._aiortc_call.request_call(user_id)
+                        if "error" in result:
+                            self.send_response(req_id, False, error=result["error"])
+                        else:
+                            self.send_response(req_id, True, {"call_id": result.get("call_id"), "status": result.get("status")})
+                    except Exception as e:
+                        self.send_response(req_id, False, error=str(e))
+                # Fallback to legacy tgcalls
+                elif TGCALLS_AVAILABLE:
+                    try:
+                        call = OutgoingCall(self.app, self, user_id)
+                        self.app.add_handler(RawUpdateHandler(call.process_update), -1)
+                        await call.request()
+                        self._active_calls[call.call_id] = call
+                        self.send_response(req_id, True, {"call_id": call.call_id})
+                    except Exception as e:
+                        self.send_response(req_id, False, error=str(e))
+                else:
+                    self.send_response(req_id, False, error="No call library available")
             
             elif action == "call.answer":
                 call_id = payload.get("call_id")
@@ -780,44 +836,74 @@ class TelegramTextBridge:
                     self.send_response(req_id, False, error=str(e))
             
             elif action == "call.hangup":
-                call_id = payload.get("call_id")
-                if not call_id:
-                    # Hangup the first active call
-                    if self._active_calls:
+                # Use aiortc if available and has active call
+                if self._aiortc_call and self._aiortc_call.state.state != "IDLE":
+                    try:
+                        result = await self._aiortc_call.hangup()
+                        self.send_response(req_id, True, result)
+                    except Exception as e:
+                        self.send_response(req_id, False, error=str(e))
+                # Fallback to legacy tgcalls
+                elif self._active_calls:
+                    call_id = payload.get("call_id")
+                    if not call_id:
                         call_id = next(iter(self._active_calls.keys()))
-                
-                if not call_id or call_id not in self._active_calls:
+                    
+                    if call_id not in self._active_calls:
+                        self.send_response(req_id, False, error="No active call")
+                        return
+                    
+                    call = self._active_calls[call_id]
+                    try:
+                        await call.discard_call()
+                        self.send_response(req_id, True, {"call_id": call_id})
+                    except Exception as e:
+                        self.send_response(req_id, False, error=str(e))
+                else:
                     self.send_response(req_id, False, error="No active call")
-                    return
-                
-                call = self._active_calls[call_id]
-                try:
-                    await call.discard_call()
-                    self.send_response(req_id, True, {"call_id": call_id})
-                except Exception as e:
-                    self.send_response(req_id, False, error=str(e))
             
             elif action == "call.status":
-                call_id = payload.get("call_id")
-                if call_id and call_id in self._active_calls:
-                    call = self._active_calls[call_id]
-                    self.send_response(req_id, True, {
-                        "call_id": call_id,
-                        "state": call.state,
-                        "caller_id": call.caller_id,
-                        "is_outgoing": call.is_outgoing,
-                    })
-                else:
-                    # Return all active calls
-                    calls_info = []
-                    for cid, call in self._active_calls.items():
-                        calls_info.append({
-                            "call_id": cid,
+                # Check aiortc first
+                if self._aiortc_call:
+                    status = self._aiortc_call.get_status()
+                    self.send_response(req_id, True, status)
+                elif self._active_calls:
+                    call_id = payload.get("call_id")
+                    if call_id and call_id in self._active_calls:
+                        call = self._active_calls[call_id]
+                        self.send_response(req_id, True, {
+                            "call_id": call_id,
                             "state": call.state,
                             "caller_id": call.caller_id,
                             "is_outgoing": call.is_outgoing,
                         })
-                    self.send_response(req_id, True, {"calls": calls_info})
+                    else:
+                        calls_info = []
+                        for cid, call in self._active_calls.items():
+                            calls_info.append({
+                                "call_id": cid,
+                                "state": call.state,
+                                "caller_id": call.caller_id,
+                                "is_outgoing": call.is_outgoing,
+                            })
+                        self.send_response(req_id, True, {"calls": calls_info, "active": bool(calls_info)})
+                else:
+                    self.send_response(req_id, True, {"active": False, "state": "IDLE"})
+            
+            elif action == "call.speak":
+                # Speak text in active call (TTS + playback)
+                text = payload.get("text")
+                if not text:
+                    self.send_response(req_id, False, error="text required")
+                    return
+                if self._aiortc_call and self._aiortc_call.state.state == "ACTIVE":
+                    try:
+                        result = await self._aiortc_call.speak_text(text)
+                        self.send_response(req_id, True, result)
+                    except Exception as e:
+                        self.send_response(req_id, False, error=str(e))
+                else:
+                    self.send_response(req_id, False, error="No active call")
             
             elif action == "call.set_auto_answer":
                 self._auto_answer = payload.get("enabled", False)
@@ -1028,10 +1114,25 @@ class TelegramTextBridge:
         try:
             await self.app.start()
             me = await self.app.get_me()
+            
+            # Initialize aiortc P2P call service if available
+            if AIORTC_AVAILABLE:
+                try:
+                    self._aiortc_call = AiortcP2PCall(
+                        client=self.app,
+                        voice_service=self.voice_client,
+                        on_event=self._on_aiortc_event
+                    )
+                    print("INFO: aiortc P2P call service initialized", file=sys.stderr)
+                except Exception as e:
+                    print(f"WARNING: Failed to initialize aiortc: {e}", file=sys.stderr)
+                    self._aiortc_call = None
+            
             self.emit_event("ready", {
                 "user_id": me.id, 
                 "username": me.username, 
                 "name": me.first_name,
+                "aiortc_available": self._aiortc_call is not None,
                 "tgcalls_available": TGCALLS_AVAILABLE,
                 "auto_answer": self._auto_answer,
             })
